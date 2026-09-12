@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Bloom - a sixty-second multiplayer garden survival game.">
+    <title>Bloom</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <main>
+      <canvas id="game" aria-label="Bloom game world"></canvas>
+
+      <section class="shell" id="menu" aria-labelledby="title">
+        <div class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i><b></b></div>
+        <p class="eyebrow">Sixty seconds + bloom</p>
+        <h1 id="title">BLOOM</h1>
+        <p class="tagline">Stay inside. Grow stronger. Be the last gardener standing.</p>
+
+        <label for="name">Your name</label>
+        <input id="name" maxlength="18" autocomplete="nickname" placeholder="Gardener">
+
+        <div class="actions">
+          <button id="create" class="primary">Create private room</button>
+          <span>or</span>
+          <div class="join-row">
+            <input id="room-code" maxlength="5" aria-label="Room code" placeholder="CODE">
+            <button id="join">Join</button>
+          </div>
+        </div>
+        <p class="connection"><span id="connection-dot"></span><span id="connection-label">Connecting...</span></p>
+      </section>
+
+      <section class="shell lobby" id="lobby" hidden aria-labelledby="lobby-title">
+        <p class="eyebrow">Private garden</p>
+        <h2 id="lobby-title">Room <button id="copy-code" title="Copy room code"></button></h2>
+        <p class="lobby-note">Share this code. The host starts when everyone is ready.</p>
+        <ol id="player-list"></ol>
+        <button id="start" class="primary">Start match</button>
+        <p id="waiting">Waiting for the host...</p>
+      </section>
+
+      <aside id="hud" hidden>
+        <div class="hud-top">
+          <div><small>ROOM</small><strong id="hud-room"></strong></div>
+          <div class="storm-status"><small id="storm-label">STORM / CYCLE 1</small><strong id="storm-time"></strong></div>
+          <div class="ping"><small>LATENCY</small><strong id="ping">-- ms</strong></div>
+        </div>
+        <div class="hud-bottom">
+          <div class="health"><span>HP</span><div><i id="health-fill"></i></div><strong id="health">100</strong></div>
+          <div class="flower-card" id="flower-card">
+            <div class="flower-icon" id="flower-icon" aria-hidden="true"></div>
+            <div><small>FLOWER · E</small><strong id="flower">EMPTY</strong></div>
+          </div>
+          <div class="ammo"><small>RIFLE · R</small><strong id="ammo">UNARMED</strong></div>
+        </div>
+      </aside>
+
+      <div id="announcement" hidden>
+        <p id="announcement-kicker"></p>
+        <h2 id="announcement-title"></h2>
+        <p id="announcement-copy"></p>
+      </div>
+
+      <div id="toast" role="status" aria-live="polite"></div>
+      <div class="controls" id="controls" hidden>WASD MOVE · MOUSE AIM · HOLD CLICK FIRE · R RELOAD · E HEAL</div>
+    </main>
+    <script src="config.js"></script>
+    <script type="module" src="game.js"></script>
+  </body>
+</html>

@@ -1,0 +1,20 @@
+{
+  "name": "bloom-game",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Authoritative multiplayer vertical slice for Bloom",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "node --watch server/server.js",
+    "start": "node server/server.js",
+    "test": "node --test",
+    "check": "node --check server/server.js && node --check public/game.js && npm test"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "ws": "^8.18.3"
+  }
+}
