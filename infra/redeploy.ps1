@@ -48,7 +48,7 @@ Write-Host "Redeploying to $instanceId..." -ForegroundColor Cyan
 $commandId = & aws ssm send-command `
   --instance-ids $instanceId `
   --document-name AWS-RunShellScript `
-  --parameters 'commands=["set -e","cd /opt/bloom","git fetch --depth 1 origin master","git reset --hard origin/master","npm ci --omit=dev","chown -R bloom:bloom /opt/bloom","systemctl restart bloom","sleep 2","systemctl is-active bloom"]' `
+  --parameters 'commands=["set -e","cd /opt/bloom","git -c safe.directory=/opt/bloom fetch --depth 1 origin master","git -c safe.directory=/opt/bloom reset --hard origin/master","npm ci --omit=dev","chown -R bloom:bloom /opt/bloom","systemctl restart bloom","sleep 2","systemctl is-active bloom"]' `
   --query "Command.CommandId" --region $Region --output text
 if ($LASTEXITCODE -ne 0) { throw "Could not send the SSM command. Is the SSM agent registered?" }
 $commandId = ($commandId | Out-String).Trim()

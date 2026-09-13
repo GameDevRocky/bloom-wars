@@ -29,6 +29,10 @@ id bloom >/dev/null 2>&1 || useradd --system --create-home --shell /sbin/nologin
 
 rm -rf "$APP_DIR"
 git clone --depth 1 "$REPO_URL" "$APP_DIR"
+# Redeploys run as root over SSM while the tree is owned by bloom; without this
+# git refuses to touch it ("dubious ownership"). --system, not --global: the SSM
+# shell has no HOME.
+git config --system --add safe.directory "$APP_DIR"
 cd "$APP_DIR"
 # Production deps only. Never run `npm run build` here: that is Vercel's job and
 # would overwrite public/config.js with an empty server URL.
