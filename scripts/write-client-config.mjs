@@ -1,8 +1,12 @@
 import { writeFileSync } from "node:fs";
 
-const url = process.env.BLOOM_SERVER_URL ?? "";
+// Shells and secret stores leak byte-order marks and stray whitespace into
+// environment values; a BOM here makes new URL() throw in the browser.
+const url = (process.env.BLOOM_SERVER_URL ?? "").replace(/^﻿/, "").trim();
 if (!url) {
   console.warn("BLOOM_SERVER_URL is not set; the client will fall back to its own origin.");
+} else if (!/^wss?:\/\//.test(url)) {
+  throw new Error(`BLOOM_SERVER_URL must start with ws:// or wss://, got: ${JSON.stringify(url)}`);
 }
 
 writeFileSync(
