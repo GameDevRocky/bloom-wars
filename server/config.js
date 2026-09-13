@@ -2,8 +2,14 @@ export const CONFIG = Object.freeze({
   tickRate: 30,
   snapshotRate: 15,
   maxRoomPlayers: 64,
+  skinCount: 16,
   playerRadius: 16,
   playerSpeed: 225,
+  // Velocity eases toward the input direction rather than snapping to it, so
+  // starting and stopping carry weight. This is the rate of that approach, in
+  // units of 1/second: ~95% of top speed after 3 / playerResponse seconds.
+  // Higher is snappier, lower is more slippery.
+  playerResponse: 12,
   maxHp: 100,
   rifle: Object.freeze({
     magazineSize: 30,

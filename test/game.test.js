@@ -24,6 +24,50 @@ test('only the host can start and all players begin unarmed at full health', () 
   }
 });
 
+test('movement accelerates toward terminal speed instead of starting at it', () => {
+  const { room } = controlledRoom();
+  room.start('host');
+  const host = room.players.get('host');
+  host.x = room.map.width / 2;
+  host.y = room.map.height / 2;
+  host.input = { ...host.input, right: true };
+
+  const step = 1 / 30;
+  room.movePlayer(host, step);
+  const afterOneTick = Math.hypot(host.vx, host.vy);
+  assert.ok(afterOneTick > 0, 'player should be moving after one tick');
+
+  assert.ok(
+    afterOneTick < CONFIG.playerSpeed * 0.75,
+    `one tick should not reach top speed, got ${afterOneTick}`,
+  );
+
+  for (let i = 0; i < 60; i += 1) room.movePlayer(host, step);
+  const settled = Math.hypot(host.vx, host.vy);
+  assert.ok(
+    Math.abs(settled - CONFIG.playerSpeed) < CONFIG.playerSpeed * 0.02,
+    `expected ~${CONFIG.playerSpeed}, got ${settled}`,
+  );
+
+  // Releasing the key should coast to a stop rather than halting dead.
+  host.input = { ...host.input, right: false };
+  room.movePlayer(host, step);
+  const coasting = Math.hypot(host.vx, host.vy);
+  assert.ok(coasting > 0 && coasting < settled, `expected decay, got ${coasting} from ${settled}`);
+
+  for (let i = 0; i < 30; i += 1) room.movePlayer(host, step);
+  assert.ok(Math.hypot(host.vx, host.vy) < 1, 'player should come to rest within a second');
+});
+
+test('each player in a room gets a distinct skin', () => {
+  const { room } = controlledRoom(['a', 'b', 'c']);
+  const skins = [...room.players.values()].map((player) => player.skin);
+  assert.equal(new Set(skins).size, skins.length);
+  for (const skin of skins) {
+    assert.ok(Number.isInteger(skin) && skin >= 0 && skin < CONFIG.skinCount);
+  }
+});
+
 test('flower healing starts at one, grows every two seconds, and caps at fifty', () => {
   const player = { flowerCollectedAt: 1_000 };
   assert.equal(flowerHealAt(player, 1_000), 1);

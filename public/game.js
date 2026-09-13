@@ -224,6 +224,47 @@ function worldToScreen(point) {
   };
 }
 
+// ── character sprites ───────────────────────────────────────────────────────
+// Body art and weapons are drawn pointing up in the sheets, the arms hanging
+// down, so each needs a quarter turn to line up with an aim of 0 (due east).
+const BODY_TURN = Math.PI / 2;
+const ARM_TURN = -Math.PI / 2;
+const art = { atlas: null, skins: null, weapons: null, ready: false };
+
+function loadImage(source) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.addEventListener('load', () => resolve(image));
+    image.addEventListener('error', () => reject(new Error(`could not load ${source}`)));
+    image.src = source;
+  });
+}
+
+async function loadArt() {
+  try {
+    const atlas = await (await fetch('assets/atlas.json')).json();
+    const [skins, weapons] = await Promise.all([
+      loadImage(atlas.skins.image),
+      loadImage(atlas.weapons.image),
+    ]);
+    Object.assign(art, { atlas, skins, weapons, ready: true });
+  } catch (error) {
+    // Flat shapes still render, so a missing sheet costs looks, not play.
+    console.warn('character art unavailable, falling back to shapes', error);
+  }
+}
+
+function drawSprite(image, rect, angle, scale, anchorX, anchorY) {
+  context.save();
+  context.rotate(angle);
+  context.drawImage(
+    image, rect.x, rect.y, rect.w, rect.h,
+    -anchorX * rect.w * scale, -anchorY * rect.h * scale,
+    rect.w * scale, rect.h * scale,
+  );
+  context.restore();
+}
+
 function drawWorld() {
   context.fillStyle = PALETTE.leaf;
   context.fillRect(0, 0, innerWidth, innerHeight);
@@ -283,10 +324,22 @@ function drawObstacle(obstacle) {
   context.strokeRect(position.x + 2, position.y + 2, obstacle.width * state.scale - 4, obstacle.height * state.scale - 4);
 }
 
+const PICKUP_ART = { rifle: 'rifle', ammo: 'magazine' };
+
 function drawPickup(pickup) {
   const position = worldToScreen(pickup);
   context.save();
   context.translate(position.x, position.y);
+
+  const artName = PICKUP_ART[pickup.kind];
+  if (art.ready && artName) {
+    const rect = art.atlas.weapons.items[artName];
+    const height = state.config.playerRadius * state.scale * (pickup.kind === 'rifle' ? 2.4 : 1.5);
+    drawSprite(art.weapons, rect, -0.45, height / rect.h, 0.5, 0.5);
+    context.restore();
+    return;
+  }
+
   if (pickup.kind === 'rifle') {
     context.rotate(-0.45);
     context.fillStyle = PALETTE.forestDark;
@@ -322,11 +375,46 @@ function drawBullet(bullet) {
   context.fill();
 }
 
-function drawPlayer(player) {
-  const position = worldToScreen(player);
-  const radius = state.config.playerRadius * state.scale;
+function drawCharacter(player, radius) {
+  const variants = art.atlas.skins.variants;
+  const variant = variants[(player.skin ?? 0) % variants.length];
+  const scale = (radius * 2.5) / variant.torso.w;
+  const aim = player.aim;
+  const cos = Math.cos(aim);
+  const sin = Math.sin(aim);
+  // Offsets are given as (forward, sideways) from the player's centre so the
+  // whole rig follows the aim without each part needing its own trigonometry.
+  const place = (forward, side) => {
+    context.translate(forward * cos - side * sin, forward * sin + side * cos);
+  };
+
   context.save();
-  context.translate(position.x, position.y);
+  place(-radius * 0.5, 0);
+  drawSprite(art.skins, variant.legs, aim + BODY_TURN, scale * 0.92, 0.5, 0.5);
+  context.restore();
+
+  drawSprite(art.skins, variant.torso, aim + BODY_TURN, scale, 0.5, 0.5);
+
+  const armScale = scale * 0.55;
+  for (const [part, side] of [[variant.armLong, -1], [variant.armBent, 1]]) {
+    context.save();
+    place(radius * 0.34, side * radius * 0.5);
+    drawSprite(art.skins, part, aim + ARM_TURN, armScale, 0.5, 0.12);
+    context.restore();
+  }
+
+  if (player.hasRifle) {
+    const rifle = art.atlas.weapons.items.rifle;
+    context.save();
+    place(radius * 1.05, radius * 0.1);
+    drawSprite(art.weapons, rifle, aim + BODY_TURN, (radius * 2.6) / rifle.h, 0.5, 0.5);
+    context.restore();
+  }
+
+  drawSprite(art.skins, variant.head, aim + BODY_TURN, scale * 0.62, 0.5, 0.5);
+}
+
+function drawFallbackCharacter(player, radius) {
   context.strokeStyle = PALETTE.forestDark;
   context.lineWidth = 5;
   context.beginPath();
@@ -340,16 +428,37 @@ function drawPlayer(player) {
   context.lineWidth = 3;
   context.strokeStyle = player.id === state.playerId ? PALETTE.pink : PALETTE.cream;
   context.stroke();
+}
+
+function drawPlayer(player) {
+  const position = worldToScreen(player);
+  const radius = state.config.playerRadius * state.scale;
+  context.save();
+  context.translate(position.x, position.y);
+  if (art.ready) drawCharacter(player, radius);
+  else drawFallbackCharacter(player, radius);
   context.restore();
 
+  if (player.id === state.playerId) {
+    // Own-player ring: 16 near-identical silhouettes are hard to tell apart in a
+    // crowd, and the skin colour alone does not survive a panicked glance.
+    context.strokeStyle = PALETTE.pink;
+    context.lineWidth = 2;
+    context.beginPath();
+    context.arc(position.x, position.y, radius * 1.6, 0, Math.PI * 2);
+    context.stroke();
+  }
+
+  // Cleared the sprite, which is wider than the collision radius.
+  const labelGap = radius * 1.8;
   context.fillStyle = PALETTE.forestDark;
-  context.fillRect(position.x - 20, position.y - radius - 13, 40, 4);
+  context.fillRect(position.x - 20, position.y - labelGap - 10, 40, 4);
   context.fillStyle = PALETTE.pink;
-  context.fillRect(position.x - 20, position.y - radius - 13, 40 * player.hp / 100, 4);
+  context.fillRect(position.x - 20, position.y - labelGap - 10, 40 * player.hp / 100, 4);
   context.fillStyle = PALETTE.cream;
   context.font = '700 11px system-ui';
   context.textAlign = 'center';
-  context.fillText(player.name, position.x, position.y + radius + 18);
+  context.fillText(player.name, position.x, position.y + labelGap + 14);
 }
 
 function drawMapBorder(topLeft) {
@@ -417,5 +526,6 @@ window.addEventListener('resize', resize);
 
 resize();
 setInterval(sendInput, 1_000 / 30);
+loadArt();
 connect();
 requestAnimationFrame(frame);

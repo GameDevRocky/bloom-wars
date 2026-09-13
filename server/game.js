@@ -15,6 +15,7 @@ function publicPlayer(player, now) {
   return {
     id: player.id,
     name: player.name,
+    skin: player.skin,
     x: Math.round(player.x * 10) / 10,
     y: Math.round(player.y * 10) / 10,
     aim: player.input.aim,
@@ -64,11 +65,14 @@ export class Room {
       name: cleanName(name),
       x: this.map?.width / 2 ?? 0,
       y: this.map?.height / 2 ?? 0,
+      vx: 0,
+      vy: 0,
       hp: CONFIG.maxHp,
       alive: !lateJoin,
       connected,
       input: { ...EMPTY_INPUT },
       lastInputSequence: 0,
+      skin: this.nextSkinIndex(),
       hasRifle: false,
       magazine: 0,
       reserveAmmo: 0,
@@ -81,6 +85,16 @@ export class Room {
     };
     this.players.set(id, player);
     return player;
+  }
+
+  // Hand out the lowest unused skin so a room of players stays visually
+  // distinct; past CONFIG.skinCount they start repeating.
+  nextSkinIndex() {
+    const taken = new Set([...this.players.values()].map((player) => player.skin));
+    for (let index = 0; index < CONFIG.skinCount; index += 1) {
+      if (!taken.has(index)) return index;
+    }
+    return this.players.size % CONFIG.skinCount;
   }
 
   removePlayer(id) {
@@ -131,6 +145,8 @@ export class Room {
     Object.assign(player, {
       x: spawn.x,
       y: spawn.y,
+      vx: 0,
+      vy: 0,
       hp: CONFIG.maxHp,
       alive: true,
       input: { ...EMPTY_INPUT },
@@ -211,20 +227,36 @@ export class Room {
   }
 
   movePlayer(player, deltaSeconds) {
+    if (deltaSeconds <= 0) return;
     let dx = Number(player.input.right) - Number(player.input.left);
     let dy = Number(player.input.down) - Number(player.input.up);
-    const magnitude = Math.hypot(dx, dy) || 1;
-    dx /= magnitude;
-    dy /= magnitude;
+    const magnitude = Math.hypot(dx, dy);
+    const targetVx = magnitude > 0 ? (dx / magnitude) * CONFIG.playerSpeed : 0;
+    const targetVy = magnitude > 0 ? (dy / magnitude) * CONFIG.playerSpeed : 0;
+
+    // Exact solution of dv/dt = response * (target - v). Solving it rather than
+    // stepping it means top speed is the same at any tick length; a per-tick
+    // impulse would make the cap drift with frame time.
+    const decay = Math.exp(-CONFIG.playerResponse * deltaSeconds);
+    player.vx = targetVx + (player.vx - targetVx) * decay;
+    player.vy = targetVy + (player.vy - targetVy) * decay;
+
+    const from = { x: player.x, y: player.y };
     let position = {
-      x: clamp(player.x + dx * CONFIG.playerSpeed * deltaSeconds, CONFIG.playerRadius, this.map.width - CONFIG.playerRadius),
-      y: clamp(player.y + dy * CONFIG.playerSpeed * deltaSeconds, CONFIG.playerRadius, this.map.height - CONFIG.playerRadius),
+      x: clamp(player.x + player.vx * deltaSeconds, CONFIG.playerRadius, this.map.width - CONFIG.playerRadius),
+      y: clamp(player.y + player.vy * deltaSeconds, CONFIG.playerRadius, this.map.height - CONFIG.playerRadius),
     };
     for (const obstacle of this.map.obstacles) {
       position = resolveCircleRect(position, CONFIG.playerRadius, obstacle);
     }
     player.x = clamp(position.x, CONFIG.playerRadius, this.map.width - CONFIG.playerRadius);
     player.y = clamp(position.y, CONFIG.playerRadius, this.map.height - CONFIG.playerRadius);
+
+    // Rebuild velocity from the distance actually travelled. Without this a
+    // player held against a wall keeps accumulating speed and slingshots away
+    // the moment they turn; this also preserves sliding along the wall.
+    player.vx = (player.x - from.x) / deltaSeconds;
+    player.vy = (player.y - from.y) / deltaSeconds;
   }
 
   collectPickups(player, now) {
