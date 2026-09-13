@@ -98,8 +98,9 @@ const skins = [...cells.entries()]
   .map(([, parts]) => classifySkin(parts));
 
 const weaponSheet = findComponents(readPixels(join(SOURCE_DIR, "Weapons.png")));
-// Left to right on the sheet; the last two are the long guns.
-const weaponNames = ["ammo", "seed", "magazine", "pistol", "rifle"];
+// Left to right on the sheet. "rifle" is the dark assault rifle the character
+// carries; "sniper" is the orange long gun.
+const weaponNames = ["canister", "grenade", "magazine", "rifle", "sniper"];
 const weapons = Object.fromEntries(
   weaponSheet.components
     .sort((a, b) => a.x - b.x)

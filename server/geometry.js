@@ -1,11 +1,11 @@
+import { clamp } from '../public/shared/simulation.js';
+
+export { clamp, resolveCircleRect } from '../public/shared/simulation.js';
+
 export function distanceSquared(a, b) {
   const dx = a.x - b.x;
   const dy = a.y - b.y;
   return dx * dx + dy * dy;
-}
-
-export function clamp(value, minimum, maximum) {
-  return Math.max(minimum, Math.min(maximum, value));
 }
 
 export function circleIntersectsRect(circle, rect, padding = 0) {
@@ -23,29 +23,6 @@ export function pointInsideRect(point, rect, padding = 0) {
     && point.y <= rect.y + rect.height + padding;
 }
 
-export function resolveCircleRect(position, radius, rect) {
-  const nearestX = clamp(position.x, rect.x, rect.x + rect.width);
-  const nearestY = clamp(position.y, rect.y, rect.y + rect.height);
-  let dx = position.x - nearestX;
-  let dy = position.y - nearestY;
-  const squared = dx * dx + dy * dy;
-  if (squared >= radius * radius) return position;
-
-  if (squared > 0.0001) {
-    const distance = Math.sqrt(squared);
-    const push = radius - distance;
-    return { x: position.x + (dx / distance) * push, y: position.y + (dy / distance) * push };
-  }
-
-  const choices = [
-    { gap: Math.abs(position.x - rect.x), x: rect.x - radius, y: position.y },
-    { gap: Math.abs(position.x - (rect.x + rect.width)), x: rect.x + rect.width + radius, y: position.y },
-    { gap: Math.abs(position.y - rect.y), x: position.x, y: rect.y - radius },
-    { gap: Math.abs(position.y - (rect.y + rect.height)), x: position.x, y: rect.y + rect.height + radius },
-  ].sort((a, b) => a.gap - b.gap);
-  return { x: choices[0].x, y: choices[0].y };
-}
-
 export function segmentCircleHit(start, end, circle) {
   const dx = end.x - start.x;
   const dy = end.y - start.y;
@@ -59,4 +36,3 @@ export function segmentCircleHit(start, end, circle) {
   const nearest = { x: start.x + projection * dx, y: start.y + projection * dy };
   return distanceSquared(nearest, circle) <= circle.radius * circle.radius;
 }
-

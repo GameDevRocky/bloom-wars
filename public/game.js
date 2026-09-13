@@ -15,6 +15,19 @@ const elements = Object.fromEntries([
   'announcement', 'announcement-kicker', 'announcement-title', 'announcement-copy', 'toast', 'controls',
 ].map((id) => [id, document.getElementById(id)]));
 
+import { EMPTY_INPUT, stepPlayer } from './shared/simulation.js';
+
+// Other players are drawn this far in the past, so there is always a pair of
+// received snapshots to slide between instead of a single latest position to
+// jump to. It has to exceed the gap between snapshots or playback runs dry.
+const INTERPOLATION_DELAY_MS = 110;
+// How long to keep extrapolating from the last known velocity when no newer
+// snapshot arrives. Beyond this a guess is more wrong than standing still.
+const EXTRAPOLATION_LIMIT_MS = 250;
+// Prediction errors below this are eased away invisibly; above it the player is
+// too far out of place to fix gently and is snapped.
+const RECONCILE_SMOOTH_LIMIT = 90;
+
 const context = elements.game.getContext('2d');
 const state = {
   socket: null,
@@ -30,6 +43,18 @@ const state = {
   firing: false,
   aim: 0,
   inputSequence: 0,
+  // Local simulation of our own player, run ahead of the server.
+  predicted: null,
+  // Inputs sent but not yet confirmed, replayed on top of each server update.
+  pending: [],
+  // Leftover prediction error, decayed to zero over a few frames so corrections
+  // read as drift rather than a jolt.
+  correction: { x: 0, y: 0 },
+  // Recent snapshots with local arrival times, for interpolating other players.
+  history: [],
+  // Entities as positioned for the current frame, shared by drawing and camera.
+  frameTargets: [],
+  frameBullets: [],
   camera: { x: 0, y: 0 },
   scale: 1,
   mouse: { x: 0, y: 0 },
@@ -109,6 +134,25 @@ function receive(message) {
   } else if (message.type === 'snapshot') {
     state.snapshot = message;
     state.phase = message.phase;
+
+    // Timestamped on arrival: interpolation runs on the local clock, so it
+    // needs no clock synchronisation with the server.
+    state.history.push({
+      at: performance.now(),
+      players: message.players ?? [],
+      bullets: message.bullets ?? [],
+    });
+    const cutoff = performance.now() - 1_000;
+    while (state.history.length > 2 && state.history[0].at < cutoff) state.history.shift();
+
+    const mine = message.players?.find((player) => player.id === state.playerId);
+    if (mine?.alive) {
+      if (state.predicted) reconcile(mine);
+      else state.predicted = { x: mine.x, y: mine.y, vx: mine.vx ?? 0, vy: mine.vy ?? 0 };
+    } else {
+      state.predicted = null;
+      state.pending = [];
+    }
     updateHud();
   } else if (message.type === 'pong') {
     elements.ping.textContent = `${Date.now() - message.sentAt} ms`;
@@ -149,8 +193,12 @@ function me() {
 function cameraTarget() {
   const player = me();
   if (!player) return null;
-  if (player.alive) return player;
-  return state.snapshot.players.find((candidate) => candidate.id === player.spectatorTargetId) ?? player;
+  // Follow the same positions being drawn, so the camera never lags the sprite.
+  const drawn = state.frameTargets ?? [];
+  if (player.alive) return drawn.find((candidate) => candidate.id === player.id) ?? player;
+  return drawn.find((candidate) => candidate.id === player.spectatorTargetId)
+    ?? state.snapshot.players.find((candidate) => candidate.id === player.spectatorTargetId)
+    ?? player;
 }
 
 function updateHud() {
@@ -277,8 +325,8 @@ function drawWorld() {
   drawStorm();
   for (const obstacle of state.map.obstacles) drawObstacle(obstacle);
   for (const pickup of state.snapshot.pickups ?? []) drawPickup(pickup);
-  for (const bullet of state.snapshot.bullets ?? []) drawBullet(bullet);
-  for (const player of state.snapshot.players ?? []) if (player.alive) drawPlayer(player);
+  for (const bullet of state.frameBullets ?? []) drawBullet(bullet);
+  for (const player of state.frameTargets ?? []) if (player.alive) drawPlayer(player);
   drawMapBorder(topLeft);
 }
 
@@ -395,19 +443,29 @@ function drawCharacter(player, radius) {
 
   drawSprite(art.skins, variant.torso, aim + BODY_TURN, scale, 0.5, 0.5);
 
-  const armScale = scale * 0.55;
-  for (const [part, side] of [[variant.armLong, -1], [variant.armBent, 1]]) {
+  if (player.hasRifle) {
+    // The rifle's muzzle is the nub at the bottom of its sprite, so it turns
+    // with the arms rather than the body, and anchors near its rear so the
+    // barrel reaches forward out of the hands instead of back through the player.
+    const rifle = art.atlas.weapons.items.rifle;
     context.save();
-    place(radius * 0.34, side * radius * 0.5);
-    drawSprite(art.skins, part, aim + ARM_TURN, armScale, 0.5, 0.12);
+    place(radius * 0.34, radius * 0.3);
+    drawSprite(art.weapons, rifle, aim + ARM_TURN, (radius * 2.4) / rifle.h, 0.5, 0.2);
     context.restore();
   }
 
-  if (player.hasRifle) {
-    const rifle = art.atlas.weapons.items.rifle;
+  // Arms after the rifle so the hands read as gripping it. Each is angled in
+  // toward the grip; aiming both straight down the sight line leaves the far
+  // arm waving off to one side.
+  const armScale = scale * 0.5;
+  const arms = [
+    [variant.armLong, radius * 0.2, -radius * 0.42, 0.62],
+    [variant.armBent, radius * 0.24, radius * 0.44, -0.12],
+  ];
+  for (const [part, forward, side, lean] of arms) {
     context.save();
-    place(radius * 1.05, radius * 0.1);
-    drawSprite(art.weapons, rifle, aim + BODY_TURN, (radius * 2.6) / rifle.h, 0.5, 0.5);
+    place(forward, side);
+    drawSprite(art.skins, part, aim + ARM_TURN + lean, armScale, 0.5, 0.12);
     context.restore();
   }
 
@@ -470,9 +528,21 @@ function drawMapBorder(topLeft) {
 function frame(now) {
   const delta = Math.min(0.1, (now - state.lastFrame) / 1_000);
   state.lastFrame = now;
+
+  // Bleed off any leftover prediction error. Fast enough to stay current,
+  // slow enough that a correction reads as drift instead of a jolt.
+  const settle = Math.exp(-14 * delta);
+  state.correction.x *= settle;
+  state.correction.y *= settle;
+
+  const renderTime = performance.now() - INTERPOLATION_DELAY_MS;
+  state.frameTargets = renderedPlayers(renderTime);
+  state.frameBullets = interpolatedBullets(renderTime);
   const target = cameraTarget();
   if (target) {
-    const interpolation = 1 - Math.exp(-8 * delta);
+    // The camera snaps to our own predicted position rather than easing toward
+    // it: easing toward a position that is already correct only adds lag.
+    const interpolation = target.id === state.playerId ? 1 : 1 - Math.exp(-8 * delta);
     state.camera.x += (target.x - state.camera.x) * interpolation;
     state.camera.y += (target.y - state.camera.y) * interpolation;
   }
@@ -480,10 +550,14 @@ function frame(now) {
   requestAnimationFrame(frame);
 }
 
+// ── client-side prediction ──────────────────────────────────────────────────
+// Inputs are applied locally the moment they are sent, so the player responds
+// to the keyboard immediately instead of after a server round trip. The server
+// still decides the real outcome; see reconcile().
+
 function sendInput() {
   if (state.phase !== 'playing') return;
-  send({
-    type: 'input',
+  const input = {
     sequence: ++state.inputSequence,
     up: state.keys.has('KeyW'),
     down: state.keys.has('KeyS'),
@@ -491,7 +565,133 @@ function sendInput() {
     right: state.keys.has('KeyD'),
     firing: state.firing,
     aim: state.aim,
+  };
+  send({ type: 'input', ...input });
+
+  if (!state.predicted || !state.map || !state.config) return;
+  // One input, one fixed step -- matching how the server consumes them, so a
+  // replay of the same inputs lands in the same place.
+  stepPlayer(state.predicted, input, state.config, state.map, 1 / state.config.tickRate);
+  state.pending.push(input);
+}
+
+// Re-runs everything the server has not confirmed yet, starting from the
+// position it did confirm. Whatever the server changed underneath us (a wall,
+// a dropped packet) survives; everything we have sent since is reapplied.
+function reconcile(authoritative) {
+  if (!state.map || !state.config) return;
+  const body = {
+    x: authoritative.x,
+    y: authoritative.y,
+    vx: authoritative.vx ?? 0,
+    vy: authoritative.vy ?? 0,
+  };
+  state.pending = state.pending.filter((input) => input.sequence > (authoritative.ack ?? 0));
+  const step = 1 / state.config.tickRate;
+  for (const input of state.pending) stepPlayer(body, input, state.config, state.map, step);
+
+  if (state.predicted) {
+    // Carry the old prediction's error forward as a visual offset, then let it
+    // decay. Without this every correction, however small, is a visible jump.
+    const errorX = state.predicted.x + state.correction.x - body.x;
+    const errorY = state.predicted.y + state.correction.y - body.y;
+    const drift = Math.hypot(errorX, errorY);
+    if (drift > RECONCILE_SMOOTH_LIMIT) {
+      // Too far gone to hide: snap, and accept the rubberband.
+      state.correction.x = 0;
+      state.correction.y = 0;
+    } else {
+      state.correction.x = errorX;
+      state.correction.y = errorY;
+    }
+  }
+  state.predicted = body;
+}
+
+// Where our own player should be drawn this frame.
+function localPlayer() {
+  const player = me();
+  if (!player) return null;
+  if (!player.alive || !state.predicted) return player;
+  return {
+    ...player,
+    x: state.predicted.x + state.correction.x,
+    y: state.predicted.y + state.correction.y,
+    aim: state.aim,
+  };
+}
+
+// ── entity interpolation and dead reckoning ─────────────────────────────────
+// Everyone else is drawn slightly in the past, slid between the two snapshots
+// that bracket that moment. If no newer snapshot has arrived, their last known
+// velocity carries them for a short while rather than leaving them frozen.
+function bracket(renderTime) {
+  const history = state.history;
+  if (history.length === 0) return null;
+  let older = history[0];
+  let newer = null;
+  for (const entry of history) {
+    if (entry.at <= renderTime) older = entry;
+    else { newer = entry; break; }
+  }
+  const span = newer ? newer.at - older.at : 0;
+  return { older, newer, ratio: span > 0 ? (renderTime - older.at) / span : 1 };
+}
+
+// Slides entities between the two snapshots either side of renderTime. With no
+// newer snapshot to aim at -- a dropped or late packet -- their last known
+// velocity carries them, which is what keeps motion smooth through a hiccup
+// instead of stalling and then teleporting.
+function interpolate(renderTime, key, blend) {
+  const frames = bracket(renderTime);
+  if (!frames) return [];
+  const { older, newer, ratio } = frames;
+
+  if (!newer) {
+    const ahead = Math.min(renderTime - older.at, EXTRAPOLATION_LIMIT_MS) / 1_000;
+    return older[key].map((entity) => ({
+      ...entity,
+      x: entity.x + (entity.vx ?? 0) * ahead,
+      y: entity.y + (entity.vy ?? 0) * ahead,
+    }));
+  }
+
+  const previous = new Map(older[key].map((entity) => [entity.id, entity]));
+  return newer[key].map((entity) => {
+    const before = previous.get(entity.id);
+    if (!before) return entity;
+    return blend(before, entity, ratio);
   });
+}
+
+function interpolatedPlayers(renderTime) {
+  return interpolate(renderTime, 'players', (before, after, ratio) => ({
+    ...after,
+    x: before.x + (after.x - before.x) * ratio,
+    y: before.y + (after.y - before.y) * ratio,
+    aim: before.aim + angleDelta(before.aim, after.aim) * ratio,
+  }));
+}
+
+function interpolatedBullets(renderTime) {
+  return interpolate(renderTime, 'bullets', (before, after, ratio) => ({
+    ...after,
+    x: before.x + (after.x - before.x) * ratio,
+    y: before.y + (after.y - before.y) * ratio,
+  }));
+}
+
+// Shortest way round the circle, so aim never spins the long way at the seam.
+function angleDelta(from, to) {
+  return Math.atan2(Math.sin(to - from), Math.cos(to - from));
+}
+
+// Players as they should be drawn: everyone interpolated, ourselves predicted.
+function renderedPlayers(renderTime) {
+  const players = interpolatedPlayers(renderTime);
+  const local = localPlayer();
+  if (!local) return players;
+  return players.map((player) => (player.id === state.playerId ? local : player));
 }
 
 elements.create.addEventListener('click', () => send({ type: 'create_room', name: elements.name.value }));

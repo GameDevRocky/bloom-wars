@@ -1,10 +1,14 @@
 import crypto from 'node:crypto';
 import { CONFIG } from './config.js';
-import { clamp, distanceSquared, pointInsideRect, resolveCircleRect } from './geometry.js';
+import { clamp, distanceSquared, pointInsideRect } from './geometry.js';
 import { generateMap, validateMap } from './map.js';
 import { createRandom, randomBetween } from './random.js';
+import { EMPTY_INPUT, readInput, stepPlayer } from '../public/shared/simulation.js';
 
-const EMPTY_INPUT = Object.freeze({ up: false, down: false, left: false, right: false, firing: false, aim: 0 });
+// Every input is simulated as exactly one step of this length on both sides, so
+// the client can replay its unacknowledged inputs and arrive at the same
+// position the server did. A variable step would make the two drift apart.
+const FIXED_STEP = 1 / CONFIG.tickRate;
 
 function cleanName(value) {
   const result = String(value ?? '').trim().replace(/[^a-zA-Z0-9 _-]/g, '').slice(0, 18);
@@ -18,6 +22,12 @@ function publicPlayer(player, now) {
     skin: player.skin,
     x: Math.round(player.x * 10) / 10,
     y: Math.round(player.y * 10) / 10,
+    // Velocity lets clients keep a player moving when the next packet is late
+    // instead of freezing them in place until it lands.
+    vx: Math.round(player.vx),
+    vy: Math.round(player.vy),
+    // The last input this player sent that is baked into the position above.
+    ack: player.lastProcessedSequence,
     aim: player.input.aim,
     hp: Math.max(0, Math.round(player.hp * 10) / 10),
     alive: player.alive,
@@ -71,7 +81,9 @@ export class Room {
       alive: !lateJoin,
       connected,
       input: { ...EMPTY_INPUT },
-      lastInputSequence: 0,
+      inputQueue: [],
+      inputCredits: 0,
+      lastProcessedSequence: 0,
       skin: this.nextSkinIndex(),
       hasRifle: false,
       magazine: 0,
@@ -150,6 +162,8 @@ export class Room {
       hp: CONFIG.maxHp,
       alive: true,
       input: { ...EMPTY_INPUT },
+      inputQueue: [],
+      inputCredits: 0,
       hasRifle: false,
       magazine: 0,
       reserveAmmo: 0,
@@ -175,20 +189,25 @@ export class Room {
     };
   }
 
-  receiveInput(playerId, input) {
+  receiveInput(playerId, raw) {
     const player = this.players.get(playerId);
     if (!player || !player.alive || this.phase !== 'playing') return;
-    const sequence = Number(input.sequence) || 0;
-    if (sequence < player.lastInputSequence) return;
-    player.lastInputSequence = sequence;
-    player.input = {
-      up: Boolean(input.up),
-      down: Boolean(input.down),
-      left: Boolean(input.left),
-      right: Boolean(input.right),
-      firing: Boolean(input.firing),
-      aim: Number.isFinite(input.aim) ? input.aim : player.input.aim,
-    };
+    const input = readInput(raw, player.input);
+    // Replays and out-of-order arrivals would move the player twice for the
+    // same moment, so only ever accept inputs that advance the sequence.
+    const newest = player.inputQueue.at(-1)?.sequence ?? player.lastProcessedSequence;
+    if (input.sequence <= newest) return;
+    // A client sending faster than the tick rate would otherwise buy itself
+    // extra movement, so the backlog is capped and the oldest input dropped.
+    // Acknowledging the dropped one matters: the client replays everything the
+    // server has not confirmed, so an input that is silently discarded stays in
+    // its prediction forever and the two never agree again. Acking it turns a
+    // permanent desync into one small correction that smoothing absorbs.
+    if (player.inputQueue.length >= CONFIG.input.queueLimit) {
+      const dropped = player.inputQueue.shift();
+      player.lastProcessedSequence = Math.max(player.lastProcessedSequence, dropped.sequence);
+    }
+    player.inputQueue.push(input);
   }
 
   requestReload(playerId) {
@@ -217,46 +236,33 @@ export class Room {
     for (const player of this.players.values()) {
       if (!player.alive) continue;
       this.finishReload(player, now);
-      this.movePlayer(player, deltaSeconds);
+      this.consumeInputs(player, now);
       this.collectPickups(player, now);
-      if (player.input.firing) this.fire(player, now);
       this.applyStormDamage(player, deltaSeconds, now);
     }
     this.updateBullets(deltaSeconds, now);
     this.checkWinner(now);
   }
 
-  movePlayer(player, deltaSeconds) {
-    if (deltaSeconds <= 0) return;
-    let dx = Number(player.input.right) - Number(player.input.left);
-    let dy = Number(player.input.down) - Number(player.input.up);
-    const magnitude = Math.hypot(dx, dy);
-    const targetVx = magnitude > 0 ? (dx / magnitude) * CONFIG.playerSpeed : 0;
-    const targetVy = magnitude > 0 ? (dy / magnitude) * CONFIG.playerSpeed : 0;
-
-    // Exact solution of dv/dt = response * (target - v). Solving it rather than
-    // stepping it means top speed is the same at any tick length; a per-tick
-    // impulse would make the cap drift with frame time.
-    const decay = Math.exp(-CONFIG.playerResponse * deltaSeconds);
-    player.vx = targetVx + (player.vx - targetVx) * decay;
-    player.vy = targetVy + (player.vy - targetVy) * decay;
-
-    const from = { x: player.x, y: player.y };
-    let position = {
-      x: clamp(player.x + player.vx * deltaSeconds, CONFIG.playerRadius, this.map.width - CONFIG.playerRadius),
-      y: clamp(player.y + player.vy * deltaSeconds, CONFIG.playerRadius, this.map.height - CONFIG.playerRadius),
-    };
-    for (const obstacle of this.map.obstacles) {
-      position = resolveCircleRect(position, CONFIG.playerRadius, obstacle);
+  // Simulates the inputs waiting for this player, one fixed step each. Nothing
+  // happens on a tick with no input: skipping is what keeps the server's step
+  // sequence identical to the one the client predicted, so a late packet costs
+  // a moment of stillness rather than a correction. The backlog is then drained
+  // in a burst when it arrives.
+  consumeInputs(player, now) {
+    player.inputCredits = Math.min(CONFIG.input.creditLimit, player.inputCredits + 1);
+    while (player.inputQueue.length > 0 && player.inputCredits > 0) {
+      const input = player.inputQueue.shift();
+      player.input = input;
+      player.inputCredits -= 1;
+      player.lastProcessedSequence = input.sequence;
+      this.movePlayer(player, FIXED_STEP);
+      if (input.firing) this.fire(player, now);
     }
-    player.x = clamp(position.x, CONFIG.playerRadius, this.map.width - CONFIG.playerRadius);
-    player.y = clamp(position.y, CONFIG.playerRadius, this.map.height - CONFIG.playerRadius);
+  }
 
-    // Rebuild velocity from the distance actually travelled. Without this a
-    // player held against a wall keeps accumulating speed and slingshots away
-    // the moment they turn; this also preserves sliding along the wall.
-    player.vx = (player.x - from.x) / deltaSeconds;
-    player.vy = (player.y - from.y) / deltaSeconds;
+  movePlayer(player, deltaSeconds) {
+    stepPlayer(player, player.input, CONFIG, this.map, deltaSeconds);
   }
 
   collectPickups(player, now) {
@@ -432,7 +438,11 @@ export class Room {
       winnerId: this.winnerId,
       players: [...this.players.values()].map((player) => publicPlayer(player, now)),
       pickups: this.map?.pickups ?? [],
-      bullets: this.bullets.map(({ id, x, y }) => ({ id, x, y })),
+      // Velocity travels with each bullet so clients can slide it between
+      // updates; at 920 u/s it would otherwise jump a body-length per snapshot.
+      bullets: this.bullets.map(({ id, x, y, vx, vy }) => ({
+        id, x: Math.round(x), y: Math.round(y), vx: Math.round(vx), vy: Math.round(vy),
+      })),
       storm: this.currentStorm(now),
       events,
     };

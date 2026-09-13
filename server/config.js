@@ -10,6 +10,14 @@ export const CONFIG = Object.freeze({
   // units of 1/second: ~95% of top speed after 3 / playerResponse seconds.
   // Higher is snappier, lower is more slippery.
   playerResponse: 12,
+  // Each input a client sends is simulated as exactly one tick, so the client
+  // can replay them and land on the same answer. Credits refill one per tick
+  // and cap the burst, which is what stops a client sending inputs faster than
+  // the tick rate from moving faster than everyone else.
+  input: Object.freeze({
+    queueLimit: 8,
+    creditLimit: 6,
+  }),
   maxHp: 100,
   rifle: Object.freeze({
     magazineSize: 30,
