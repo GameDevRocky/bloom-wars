@@ -10,6 +10,7 @@
   "scripts": {
     "dev": "node --watch server/server.js",
     "start": "node server/server.js",
+    "build": "node scripts/write-client-config.mjs",
     "test": "node --test",
     "check": "node --check server/server.js && node --check public/game.js && npm test"
   },
