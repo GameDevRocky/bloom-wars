@@ -141,13 +141,15 @@ export function generateMap(playerCount, seed = `${Date.now()}`) {
   const reserved = createIndex(400);
   for (const spawn of spawns) reserved.add(spawn, spawn.x, spawn.y);
   const perMillion = CONFIG.map.pickupsPerMillion;
+  const perPlayer = CONFIG.map.pickupsPerPlayer;
+  const floors = CONFIG.map.pickupFloor;
   const totalDensity = perMillion.rifle + perMillion.ammo + perMillion.seed;
   const pickupBudget = Math.min(CONFIG.map.maxPickups, Math.round(areaInMillions * totalDensity));
   let pickups = [];
   for (const [kind, density, floor] of [
-    ['rifle', perMillion.rifle, Math.max(count, 4)],
-    ['ammo', perMillion.ammo, Math.max(count * 4, 16)],
-    ['seed', perMillion.seed, Math.max(count, 6)],
+    ['rifle', perMillion.rifle, Math.max(count * perPlayer.rifle, floors.rifle)],
+    ['ammo', perMillion.ammo, Math.max(count * perPlayer.ammo, floors.ammo)],
+    ['seed', perMillion.seed, Math.max(count * perPlayer.seed, floors.seed)],
   ]) {
     // Each kind keeps its share of the budget, so capping thins the loot table
     // evenly instead of starving whichever kind is placed last.

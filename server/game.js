@@ -1,7 +1,8 @@
 import crypto from 'node:crypto';
 import { CONFIG } from './config.js';
 import {
-  clamp, distanceSquared, segmentBoundsExitTime, segmentCircleHitTime, sweptCircleRectHitTime,
+  circleIntersectsRect, clamp, distanceSquared, segmentBoundsExitTime,
+  segmentCircleHitTime, sweptCircleRectHitTime,
 } from './geometry.js';
 import { generateMap, validateMap } from './map.js';
 import { createRandom, randomBetween } from './random.js';
@@ -138,6 +139,8 @@ export class Room {
     this.map = map;
     this.bullets = [];
     this.events = [];
+    this.nextAmmoDropAt = null;
+    this.droppedPickups = 0;
     this.phase = 'playing';
     this.winnerId = null;
     this.endedAt = null;
@@ -265,7 +268,61 @@ export class Room {
       this.applyStormDamage(player, deltaSeconds, now);
     }
     this.updateBullets(deltaSeconds, now, playerStarts);
+    this.dropAmmo(now);
     this.checkWinner(now);
+  }
+
+  // Tops the arena back up with ammunition while a match runs. Starting loot is
+  // finite and a drawn-out match spends it; survivors who cannot shoot each
+  // other leave the storm to settle the match, which is not much of a fight.
+  dropAmmo(now) {
+    this.nextAmmoDropAt ||= now + CONFIG.ammoDrop.intervalMs;
+    if (now < this.nextAmmoDropAt) return;
+    this.nextAmmoDropAt = now + CONFIG.ammoDrop.intervalMs;
+
+    const living = [...this.players.values()].filter((player) => player.alive).length;
+    if (living === 0) return;
+    const wanted = living * CONFIG.ammoDrop.perLivingPlayer;
+    const available = this.map.pickups.reduce((total, pickup) => total + (pickup.kind === 'ammo' ? 1 : 0), 0);
+    if (available >= wanted) return;
+
+    const pickup = this.findAmmoDropSite();
+    if (!pickup) return;
+    this.map.pickups.push(pickup);
+    // Clients hold the loot list themselves and prune it from pickup events, so
+    // an arrival has to be announced the same way a collection is.
+    this.events.push({ type: 'pickup_spawned', pickup });
+  }
+
+  findAmmoDropSite() {
+    // Aim at where the zone is heading rather than where it is. A drop placed
+    // against the present edge is swallowed by the storm within a cycle, so it
+    // would spend its life somewhere nobody can safely go.
+    const storm = this.storm.to ?? this.currentStorm();
+    const grid = obstacleGridFor(this.map);
+    const radius = 15;
+    for (let attempt = 0; attempt < CONFIG.ammoDrop.placementAttempts; attempt += 1) {
+      // Square-rooting the random radius spreads drops evenly over the circle
+      // rather than bunching them around the middle.
+      const angle = this.random() * Math.PI * 2;
+      const distance = Math.sqrt(this.random()) * storm.radius * CONFIG.ammoDrop.zoneFraction;
+      const candidate = {
+        id: `d${this.droppedPickups = (this.droppedPickups ?? 0) + 1}`,
+        kind: 'ammo',
+        x: Math.round(clamp(storm.x + Math.cos(angle) * distance, 45, this.map.width - 45)),
+        y: Math.round(clamp(storm.y + Math.sin(angle) * distance, 45, this.map.height - 45)),
+        radius,
+      };
+      const blocked = grid.collectAround(candidate, 120)
+        .some((obstacle) => circleIntersectsRect(candidate, obstacle, 16));
+      if (blocked) continue;
+      // Landing on top of someone would hand them a free magazine.
+      const onPlayer = [...this.players.values()].some((player) => player.alive
+        && distanceSquared(player, candidate) < (CONFIG.playerRadius + radius + 30) ** 2);
+      if (onPlayer) continue;
+      return candidate;
+    }
+    return null;
   }
 
   // Simulates the inputs waiting for this player, one fixed step each. Nothing

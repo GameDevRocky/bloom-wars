@@ -44,6 +44,18 @@ export const CONFIG = Object.freeze({
     secondsPerHp: 2,
     maxHeal: 50,
   }),
+  // Ammunition keeps arriving during a match. However much is scattered at the
+  // start, a long fight can still spend all of it, and a room of survivors who
+  // cannot shoot each other has no way to end except by the storm.
+  ammoDrop: Object.freeze({
+    intervalMs: 9_000,
+    // Live ammo pickups to keep available, as a multiple of living players.
+    perLivingPlayer: 3,
+    // Drops land inside the safe zone: loot in the storm is loot nobody can
+    // reach. Kept off the very edge, which is about to close anyway.
+    zoneFraction: 0.82,
+    placementAttempts: 24,
+  }),
   storm: Object.freeze({
     contractionMs: 60_000,
     holdMs: 10_000,
@@ -64,13 +76,19 @@ export const CONFIG = Object.freeze({
     // cover and one item in view.
     obstaclesPerMillion: 6,
     pickupsPerMillion: Object.freeze({ rifle: 0.12, ammo: 0.3, seed: 0.14 }),
+    // Loot guaranteed per player, whichever is the greater of this and the
+    // density above. Winning an eight-player match means roughly a hundred and
+    // forty hits landed, so the old four magazines each ran a match dry long
+    // before it was decided.
+    pickupsPerPlayer: Object.freeze({ rifle: 5, ammo: 20, seed: 1 }),
+    pickupFloor: Object.freeze({ rifle: 5, ammo: 20, seed: 6 }),
     // Ceilings on what one match may contain. The arena widens with population
     // while these densities are per unit of area, so without a cap the contents
     // grow with the square of the player count: a full room would ask for over
     // a hundred thousand obstacles and a multi-megabyte map message. Past the
     // cap the arena stays evenly covered, just more thinly.
     maxObstacles: 14_000,
-    maxPickups: 1_400,
+    maxPickups: 4_000,
     spawnClearance: 90,
     corridorHalfWidth: 55,
   }),

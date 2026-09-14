@@ -233,3 +233,74 @@ test('firing an empty rifle emits feedback and starts reload when reserve ammo e
   assert.equal(room.events.at(-2).clientShotId, 'dry-1');
   assert.equal(host.reloadEndsAt, now() + CONFIG.rifle.reloadMs);
 });
+
+// Starting loot is finite, and a long match spends it. Survivors who cannot
+// shoot each other leave the storm to decide the match, so ammunition keeps
+// arriving while one is running.
+test('ammunition keeps arriving once the arena runs low', () => {
+  const { room, advance } = controlledRoom(['host', 'guest']);
+  room.start('host');
+  room.map.pickups = room.map.pickups.filter((pickup) => pickup.kind !== 'ammo');
+  room.events.length = 0;
+
+  const ammo = () => room.map.pickups.filter((pickup) => pickup.kind === 'ammo').length;
+  assert.equal(ammo(), 0, 'the arena starts this test with nothing to shoot');
+
+  for (let drop = 0; drop < 4; drop += 1) {
+    advance(CONFIG.ammoDrop.intervalMs);
+    room.tick(1 / CONFIG.tickRate);
+  }
+  assert.ok(ammo() > 0, 'ammunition should have been dropped in');
+
+  // Clients keep their own loot list, so an arrival has to be announced.
+  const announced = room.events.filter((event) => event.type === 'pickup_spawned');
+  assert.equal(announced.length, ammo());
+  for (const event of announced) {
+    assert.equal(event.pickup.kind, 'ammo');
+    assert.ok(room.map.pickups.some((pickup) => pickup.id === event.pickup.id));
+  }
+});
+
+test('dropped ammunition lands in the closing zone and clear of cover', () => {
+  const { room, advance } = controlledRoom(['host', 'guest']);
+  room.start('host');
+  room.map.pickups = room.map.pickups.filter((pickup) => pickup.kind !== 'ammo');
+
+  let checked = 0;
+  for (let drop = 0; drop < 12; drop += 1) {
+    room.events.length = 0;
+    advance(CONFIG.ammoDrop.intervalMs);
+    room.tick(1 / CONFIG.tickRate);
+    // Checked as each lands: the storm keeps shrinking, so a drop that was
+    // correctly placed will later sit outside the zone it was aimed at.
+    for (const event of room.events.filter((e) => e.type === 'pickup_spawned')) {
+      const { pickup } = event;
+      const target = room.storm.to;
+      const distance = Math.hypot(pickup.x - target.x, pickup.y - target.y);
+      assert.ok(distance <= target.radius,
+        `drop ${pickup.id} landed ${Math.round(distance)} from a zone closing to ${Math.round(target.radius)}`);
+      assert.ok(!room.map.obstacles.some((obstacle) => (
+        pickup.x > obstacle.x && pickup.x < obstacle.x + obstacle.width
+        && pickup.y > obstacle.y && pickup.y < obstacle.y + obstacle.height
+      )), `drop ${pickup.id} landed inside cover`);
+      checked += 1;
+    }
+  }
+  assert.ok(checked > 0, 'expected at least one drop to inspect');
+});
+
+test('ammunition drops stop once enough is on the ground', () => {
+  const { room, advance } = controlledRoom(['host', 'guest']);
+  room.start('host');
+  const living = [...room.players.values()].filter((player) => player.alive).length;
+  const target = living * CONFIG.ammoDrop.perLivingPlayer;
+
+  // Far more than the target, so nothing further is warranted.
+  assert.ok(room.map.pickups.filter((p) => p.kind === 'ammo').length > target);
+  const before = room.map.pickups.length;
+  for (let drop = 0; drop < 6; drop += 1) {
+    advance(CONFIG.ammoDrop.intervalMs);
+    room.tick(1 / CONFIG.tickRate);
+  }
+  assert.equal(room.map.pickups.length, before, 'a well-stocked arena should get no drops');
+});

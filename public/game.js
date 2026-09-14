@@ -185,6 +185,7 @@ function receive(message) {
       if (event.type === 'empty_fire' && event.clientShotId) state.predictedEmpty.delete(event.clientShotId);
       if (event.type === 'damage') state.hitFlashes.set(event.playerId, { at: arrival, amount: event.amount });
       if (event.type === 'pickup' && event.pickupId) state.pickups.delete(event.pickupId);
+      if (event.type === 'pickup_spawned' && event.pickup) state.pickups.set(event.pickup.id, event.pickup);
     }
     for (const [playerId, flash] of state.hitFlashes) {
       if (arrival - flash.at > 1_000) state.hitFlashes.delete(playerId);
