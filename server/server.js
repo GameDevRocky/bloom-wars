@@ -55,6 +55,17 @@ function handleMessage(socket, raw) {
       }
       return;
     }
+    // Answered before the room check: the client pings from the moment it
+    // connects, so rejecting it on the welcome screen raised a "join a room
+    // first" error every few seconds against a player who was doing nothing.
+    if (message.type === 'ping') {
+      send(socket, { type: 'pong', sentAt: message.sentAt, serverTime: Date.now() });
+      return;
+    }
+    if (message.type === 'list_rooms') {
+      send(socket, manager.roomListing());
+      return;
+    }
     if (!session.room) throw new Error('Join or create a room first.');
     if (message.type === 'start_match') {
       const started = session.room.start(session.playerId);
@@ -67,8 +78,6 @@ function handleMessage(socket, raw) {
       session.room.requestReload(session.playerId);
     } else if (message.type === 'consume_flower') {
       session.room.consumeFlower(session.playerId);
-    } else if (message.type === 'ping') {
-      send(socket, { type: 'pong', sentAt: message.sentAt, serverTime: Date.now() });
     }
   } catch (error) {
     fail(socket, error.message || 'Request failed.');
@@ -97,6 +106,12 @@ setInterval(() => {
   const delta = Math.min(0.1, (now - previousTick) / 1_000);
   previousTick = now;
   manager.tick(delta);
+  // A finished room starts its next match on its own once the result has been
+  // shown, so play continues without waiting on the host to click anything.
+  for (const room of manager.rooms.values()) {
+    const restarted = room.restartIfDue(Date.now());
+    if (restarted) broadcastRoom(room, restarted);
+  }
 }, 1_000 / CONFIG.tickRate);
 
 setInterval(() => {

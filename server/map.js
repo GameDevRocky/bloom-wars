@@ -9,17 +9,20 @@ function candidateIsClear(candidate, obstacles, reserved, padding = 18) {
     && !reserved.some((point) => distanceSquared(candidate, point) < (point.radius + circle.radius + padding) ** 2);
 }
 
-function createSpawns(size, count, random) {
-  const center = size / 2;
-  const ringRadius = Math.min(size * 0.36, 360 + count * 24);
-  const startAngle = random() * Math.PI * 2;
-  return shuffle(random, Array.from({ length: count }, (_, index) => {
-    const angle = startAngle + (index / count) * Math.PI * 2;
-    return {
-      x: center + Math.cos(angle) * ringRadius,
-      y: center + Math.sin(angle) * ringRadius,
-      radius: CONFIG.map.spawnClearance,
-    };
+// One column of starting positions per team, set against opposite edges and
+// spread down the map. `side` is -1 for the left (blue) and 1 for the right
+// (red). Columns are returned in order so each team's roster maps onto its own.
+function createTeamSpawns(size, count, random, side) {
+  if (count === 0) return [];
+  const inset = size * CONFIG.map.teamSpawnInset;
+  const x = side < 0 ? inset : size - inset;
+  const spread = size * CONFIG.map.teamSpawnSpread;
+  const top = (size - spread) / 2;
+  return Array.from({ length: count }, (_, index) => ({
+    // A single player starts mid-column rather than at its top.
+    x: Math.round(x + (random() - 0.5) * size * 0.05),
+    y: Math.round(top + (count === 1 ? spread / 2 : (index / (count - 1)) * spread)),
+    radius: CONFIG.map.spawnClearance,
   }));
 }
 
@@ -124,7 +127,13 @@ export function generateMap(playerCount, seed = `${Date.now()}`) {
   const count = Math.max(1, Math.min(CONFIG.maxRoomPlayers, playerCount));
   const random = createRandom(seed);
   const size = Math.round(CONFIG.map.minimumSize + Math.max(0, count - 4) * CONFIG.map.sizePerExtraPlayer);
-  const spawns = createSpawns(size, count, random);
+  // Enough starting positions on each side for the whole room, so any team
+  // split can be seated without regenerating the map.
+  const teamSpawns = {
+    blue: createTeamSpawns(size, count, random, CONFIG.teams.blue.side),
+    red: createTeamSpawns(size, count, random, CONFIG.teams.red.side),
+  };
+  const spawns = [...teamSpawns.blue, ...teamSpawns.red];
 
   // Counts scale with area, not with the world's linear expansion. Scaling
   // linearly is what left the arena with a crowded middle and bare outskirts:
@@ -164,6 +173,10 @@ export function generateMap(playerCount, seed = `${Date.now()}`) {
     obstacles,
     pickups,
     spawns: spawns.map(({ x, y }) => ({ x, y })),
+    teamSpawns: {
+      blue: teamSpawns.blue.map(({ x, y }) => ({ x, y })),
+      red: teamSpawns.red.map(({ x, y }) => ({ x, y })),
+    },
   };
 }
 

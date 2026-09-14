@@ -84,6 +84,7 @@ test('a gap narrower than the player stops at both corners regardless of obstacl
 test('client prediction and queued server inputs agree while stopping at and rounding a cover corner', () => {
   const room = new Room('WALLS', 'host', { now: () => 1_000, seedFactory: () => 'movement-corner' });
   room.addPlayer('host', 'Host');
+  room.addPlayer('rival', 'Rival');
   room.start('host');
   room.map = {
     width: 2_000, height: 2_000,

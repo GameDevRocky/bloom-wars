@@ -14,7 +14,7 @@ function startRoom(playerCount) {
 }
 
 test('players can outrun the fastest contracting storm edge at every supported map size', () => {
-  for (const count of [1, 8, CONFIG.maxRoomPlayers]) {
+  for (const count of [2, 8, CONFIG.maxRoomPlayers]) {
     const room = startRoom(count);
     // Check successive circles, including the eventual minimum-size circle.
     for (let cycle = 0; cycle < 16; cycle += 1) {
@@ -60,7 +60,7 @@ test('an extended storm contraction reports progress and phase against its own d
 });
 
 test('small storm circles retain the sixty-second contraction minimum', () => {
-  const room = startRoom(1);
+  const room = startRoom(2);
   room.storm.from = { x: 5_000, y: 5_000, radius: 500 };
   room.storm.to = { x: 5_020, y: 5_000, radius: 290 };
   assert.equal(room.currentStorm().durationMs, CONFIG.storm.contractionMs);

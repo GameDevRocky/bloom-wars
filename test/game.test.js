@@ -65,7 +65,7 @@ test('movement accelerates toward terminal speed instead of starting at it', () 
 // a correction and the player rubberbands constantly, so they must agree
 // exactly for the same inputs.
 test('server movement lands where the client predicted for the same inputs', () => {
-  const { room } = controlledRoom(['host']);
+  const { room } = controlledRoom(['host', 'rival']);
   room.start('host');
   const host = room.players.get('host');
 
@@ -97,7 +97,7 @@ test('server movement lands where the client predicted for the same inputs', () 
 });
 
 test('replayed and out-of-order inputs are ignored', () => {
-  const { room } = controlledRoom(['host']);
+  const { room } = controlledRoom(['host', 'rival']);
   room.start('host');
   const host = room.players.get('host');
 
@@ -115,7 +115,7 @@ test('replayed and out-of-order inputs are ignored', () => {
 });
 
 test('a flood of inputs cannot buy extra movement', () => {
-  const { room } = controlledRoom(['host']);
+  const { room } = controlledRoom(['host', 'rival']);
   room.start('host');
   const host = room.players.get('host');
 
@@ -160,7 +160,7 @@ test('consuming a flower heals without passing max HP and empties the slot', () 
 });
 
 test('storm finishes its published contraction duration, holds for ten seconds, then chooses a nested target', () => {
-  const { room, advance } = controlledRoom(['host']);
+  const { room, advance } = controlledRoom(['host', 'rival']);
   room.start('host');
   const initialRadius = room.storm.from.radius;
   advance(room.currentStorm().durationMs);
@@ -181,6 +181,11 @@ test('spectators transfer atomically down the killer chain', () => {
   room.start('host');
   const host = room.players.get('host');
   const guest = room.players.get('guest');
+  // Teammates cannot hurt each other, so put the two killers opposite their
+  // victims; this test is about the spectator chain, not the team split.
+  host.team = 'blue';
+  room.players.get('third').team = 'blue';
+  guest.team = 'red';
   room.damage(host, 100, 'guest', 'rifle');
   assert.equal(host.spectatorTargetId, 'guest');
   room.damage(guest, 100, 'third', 'rifle');
@@ -200,7 +205,7 @@ test('late joiners spectate a living player until the next match', () => {
 });
 
 test('empty rifles reload automatically and ammo pickup starts an empty weapon reload', () => {
-  const { room, now, advance } = controlledRoom(['host']);
+  const { room, now, advance } = controlledRoom(['host', 'rival']);
   room.start('host');
   const host = room.players.get('host');
   Object.assign(host, { hasRifle: true, magazine: 1, reserveAmmo: 30 });
@@ -223,7 +228,7 @@ test('empty rifles reload automatically and ammo pickup starts an empty weapon r
 });
 
 test('firing an empty rifle emits feedback and starts reload when reserve ammo exists', () => {
-  const { room, now } = controlledRoom(['host']);
+  const { room, now } = controlledRoom(['host', 'rival']);
   room.start('host');
   const host = room.players.get('host');
   Object.assign(host, { hasRifle: true, magazine: 0, reserveAmmo: 30 });
@@ -303,4 +308,68 @@ test('ammunition drops stop once enough is on the ground', () => {
     room.tick(1 / CONFIG.tickRate);
   }
   assert.equal(room.map.pickups.length, before, 'a well-stocked arena should get no drops');
+});
+
+test('a match needs two players and splits them into even sides', () => {
+  const { room } = controlledRoom(['host']);
+  assert.throws(() => room.start('host'), /At least 2 players/);
+
+  const { room: full } = controlledRoom(['host', 'b', 'c', 'd', 'e']);
+  full.start('host');
+  const teams = [...full.players.values()].map((player) => player.team);
+  const blue = teams.filter((team) => team === 'blue').length;
+  assert.equal(teams.length, 5);
+  assert.ok(Math.abs(blue - (teams.length - blue)) <= 1, `uneven split: ${teams}`);
+  for (const player of full.players.values()) {
+    assert.ok(CONFIG.teams[player.team].skins.includes(player.skin),
+      'a player should wear their own side\'s colours');
+  }
+});
+
+test('teams start on opposite sides of the arena', () => {
+  const { room } = controlledRoom(['host', 'b', 'c', 'd']);
+  room.start('host');
+  for (const player of room.players.values()) {
+    const onLeft = player.x < room.map.width / 2;
+    assert.equal(onLeft, player.team === 'blue',
+      `${player.team} player started at x=${player.x} on a ${room.map.width} map`);
+  }
+});
+
+test('teammates cannot shoot each other but opponents can', () => {
+  const { room } = controlledRoom(['host', 'b']);
+  room.start('host');
+  const [first, second] = [...room.players.values()];
+  first.team = 'blue';
+  second.team = 'blue';
+
+  room.damage(second, 40, first.id, 'rifle');
+  assert.equal(second.hp, CONFIG.maxHp, 'friendly fire should do nothing');
+
+  second.team = 'red';
+  room.damage(second, 40, first.id, 'rifle');
+  assert.equal(second.hp, CONFIG.maxHp - 40, 'an opponent should take the hit');
+
+  // The storm has no attacker and must still hurt.
+  room.damage(second, 10, null, 'storm');
+  assert.equal(second.hp, CONFIG.maxHp - 50);
+});
+
+test('a match ends when one side is wiped out, and the room restarts itself', () => {
+  const { room, advance, now } = controlledRoom(['host', 'b', 'c', 'd']);
+  room.start('host');
+  const blue = [...room.players.values()].filter((p) => p.team === 'blue');
+  const red = [...room.players.values()].filter((p) => p.team === 'red');
+
+  for (const player of red) room.damage(player, CONFIG.maxHp, blue[0].id, 'rifle');
+  room.tick(0);
+  assert.equal(room.phase, 'ended');
+  assert.equal(room.winningTeam, 'blue', 'the surviving side should win');
+
+  assert.equal(room.restartIfDue(now()), null, 'should not restart before the delay');
+  advance(CONFIG.restartDelayMs);
+  const restarted = room.restartIfDue(now());
+  assert.ok(restarted, 'the room should start the next match on its own');
+  assert.equal(room.phase, 'playing');
+  for (const player of room.players.values()) assert.equal(player.alive, true);
 });

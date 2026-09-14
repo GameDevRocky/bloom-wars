@@ -9,7 +9,14 @@ export const CONFIG = Object.freeze({
   tickRate: 30,
   snapshotRate: 15,
   maxRoomPlayers: 64,
+  minRoomPlayers: 2,
   skinCount: 16,
+  teams: Object.freeze({
+    blue: Object.freeze({ id: 'blue', name: 'Blue', side: -1, skins: Object.freeze([1, 4, 15, 11]) }),
+    red: Object.freeze({ id: 'red', name: 'Red', side: 1, skins: Object.freeze([2, 10, 13, 0]) }),
+  }),
+  // How long the result is shown before the room restarts on its own.
+  restartDelayMs: 10_000,
   playerRadius: 16,
   playerSpeed: 225,
   // Velocity eases toward the input direction rather than snapping to it, so
@@ -91,5 +98,10 @@ export const CONFIG = Object.freeze({
     maxPickups: 4_000,
     spawnClearance: 90,
     corridorHalfWidth: 55,
+    // Teams start against opposite edges, spread down their own side. Eight
+    // players used to share one small ring in the middle and open fire
+    // instantly; a side each gives them room to arm themselves first.
+    teamSpawnInset: 0.12,
+    teamSpawnSpread: 0.62,
   }),
 });

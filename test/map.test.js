@@ -11,8 +11,20 @@ test('maps scale with population and preserve valid spawn routes', () => {
   const large = generateMap(24, 'large');
   assert.ok(large.width > small.width);
   assert.ok(large.obstacles.length > small.obstacles.length);
-  assert.equal(small.spawns.length, 2);
-  assert.equal(large.spawns.length, 24);
+  // A full column per side, so any split of the roster can be seated without
+  // regenerating the map.
+  for (const [map, players] of [[small, 2], [large, 24]]) {
+    assert.equal(map.teamSpawns.blue.length, players);
+    assert.equal(map.teamSpawns.red.length, players);
+    assert.equal(map.spawns.length, players * 2);
+    // Sides start apart: every blue position is left of every red one.
+    const rightmostBlue = Math.max(...map.teamSpawns.blue.map((s) => s.x));
+    const leftmostRed = Math.min(...map.teamSpawns.red.map((s) => s.x));
+    assert.ok(rightmostBlue < leftmostRed,
+      `blue should start left of red, got ${rightmostBlue} and ${leftmostRed}`);
+    assert.ok(leftmostRed - rightmostBlue > map.width * 0.5,
+      'teams should start on opposite sides of the arena');
+  }
   assert.deepEqual(validateMap(small), { valid: true, issues: [] });
   assert.deepEqual(validateMap(large), { valid: true, issues: [] });
 });

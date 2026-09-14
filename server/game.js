@@ -24,6 +24,7 @@ function publicPlayer(player, now) {
     id: player.id,
     name: player.name,
     skin: player.skin,
+    team: player.team,
     x: Math.round(player.x * 10) / 10,
     y: Math.round(player.y * 10) / 10,
     // Velocity lets clients keep a player moving when the next packet is late
@@ -69,6 +70,8 @@ export class Room {
     this.storm = null;
     this.startedWith = 0;
     this.winnerId = null;
+    this.winningTeam = null;
+    this.restartAt = null;
     this.endedAt = null;
   }
 
@@ -88,6 +91,11 @@ export class Room {
       inputQueue: [],
       inputCredits: 0,
       lastProcessedSequence: 0,
+      // Seated on the smaller side straight away. Teams are reassigned when a
+      // match starts, but leaving this unset would make everyone who has not
+      // been assigned yet count as everyone else's teammate, and friendly fire
+      // would quietly stop working between them.
+      team: this.smallerTeam(),
       skin: this.nextSkinIndex(),
       hasRifle: false,
       magazine: 0,
@@ -101,6 +109,36 @@ export class Room {
     };
     this.players.set(id, player);
     return player;
+  }
+
+  smallerTeam() {
+    let blue = 0;
+    let red = 0;
+    for (const player of this.players.values()) {
+      if (player.team === 'red') red += 1;
+      else blue += 1;
+    }
+    return red < blue ? 'red' : 'blue';
+  }
+
+  // Splits the roster into two sides as evenly as possible, alternating so the
+  // extra player on an odd roster is not always the same seat. Each player also
+  // takes a skin from their team's palette, so who is friendly is readable at a
+  // glance rather than only from a nameplate.
+  assignTeams(roster) {
+    const order = [...roster];
+    for (let index = order.length - 1; index > 0; index -= 1) {
+      const swap = Math.floor(this.random() * (index + 1));
+      [order[index], order[swap]] = [order[swap], order[index]];
+    }
+    const counts = { blue: 0, red: 0 };
+    order.forEach((player, index) => {
+      const team = index % 2 === 0 ? 'blue' : 'red';
+      player.team = team;
+      const palette = CONFIG.teams[team].skins;
+      player.skin = palette[counts[team] % palette.length];
+      counts[team] += 1;
+    });
   }
 
   // Hand out the lowest unused skin so a room of players stays visually
@@ -130,7 +168,9 @@ export class Room {
     if (requestingPlayerId !== this.hostId) throw new Error('Only the host can start the match.');
     if (this.phase === 'playing') throw new Error('The match has already started.');
     const roster = [...this.players.values()].filter((player) => player.connected);
-    if (roster.length === 0) throw new Error('At least one connected player is required.');
+    if (roster.length < CONFIG.minRoomPlayers) {
+      throw new Error(`At least ${CONFIG.minRoomPlayers} players are required to start.`);
+    }
 
     const seed = this.seedFactory();
     const map = generateMap(roster.length, seed);
@@ -143,11 +183,20 @@ export class Room {
     this.droppedPickups = 0;
     this.phase = 'playing';
     this.winnerId = null;
+    this.winningTeam = null;
+    this.restartAt = null;
     this.endedAt = null;
     this.startedWith = roster.length;
     this.random = createRandom(seed);
     const now = this.now();
-    roster.forEach((player, index) => this.resetPlayer(player, map.spawns[index], now));
+    this.assignTeams(roster);
+    const seated = { blue: 0, red: 0 };
+    for (const player of roster) {
+      const column = map.teamSpawns[player.team];
+      const position = column[seated[player.team]] ?? column[column.length - 1];
+      seated[player.team] += 1;
+      this.resetPlayer(player, position, now);
+    }
     this.storm = {
       phase: 'contracting',
       phaseStartedAt: now,
@@ -428,8 +477,12 @@ export class Room {
     obstacleGridFor(this.map).forEachAlong(start, end, radius, (obstacle) => {
       consider(sweptCircleRectHitTime(start, end, radius, obstacle), 'wall');
     });
+    const owner = ownerId ? this.players.get(ownerId) : null;
     for (const player of this.players.values()) {
       if (!player.alive || player.id === ownerId) continue;
+      // Shots pass through teammates rather than stopping harmlessly in them,
+      // which would otherwise let a team wall off a corridor with their bodies.
+      if (owner && player.team === owner.team) continue;
       const previous = playerStarts?.get(player.id) ?? player;
       const playerStart = {
         x: previous.x + (player.x - previous.x) * startFraction,
@@ -540,6 +593,10 @@ export class Room {
 
   damage(player, amount, attackerId, cause) {
     if (!player.alive) return;
+    // Teammates cannot hurt each other. The storm has no attacker, so it is
+    // unaffected by this.
+    const attacker = attackerId ? this.players.get(attackerId) : null;
+    if (attacker && attacker.id !== player.id && attacker.team === player.team) return;
     player.hp -= amount;
     this.events.push({ type: 'damage', playerId: player.id, attackerId, amount, cause });
     if (player.hp <= 0) this.eliminate(player, attackerId, cause);
@@ -571,14 +628,45 @@ export class Room {
     }
   }
 
+  // A side wins by being the only one left standing, so a match ends when one
+  // team is wiped out rather than when a single player remains.
   checkWinner(now) {
-    if (this.startedWith < 2) return;
+    if (this.startedWith < CONFIG.minRoomPlayers) return;
     const living = [...this.players.values()].filter((player) => player.alive);
-    if (living.length > 1) return;
+    const standing = new Set(living.map((player) => player.team));
+    if (standing.size > 1) return;
     this.phase = 'ended';
+    this.winningTeam = [...standing][0] ?? null;
+    // Kept for the scoreboard and spectator chain: the last player upright.
     this.winnerId = living[0]?.id ?? null;
     this.endedAt = now;
-    this.events.push({ type: 'match_ended', winnerId: this.winnerId });
+    this.restartAt = now + CONFIG.restartDelayMs;
+    this.events.push({
+      type: 'match_ended',
+      winnerId: this.winnerId,
+      winningTeam: this.winningTeam,
+      winningTeam: this.winningTeam,
+      restartInMs: CONFIG.restartDelayMs,
+    });
+  }
+
+  // Rooms start the next match on their own, so a lobby does not stall waiting
+  // on a host who has already closed the tab.
+  restartIfDue(now) {
+    if (this.phase !== 'ended' || this.restartAt === null || now < this.restartAt) return null;
+    this.restartAt = null;
+    const roster = [...this.players.values()].filter((player) => player.connected);
+    if (roster.length < CONFIG.minRoomPlayers) {
+      // Not enough players to run another match; fall back to the lobby so the
+      // room is still usable when someone else arrives.
+      this.phase = 'lobby';
+      this.winnerId = null;
+      this.winningTeam = null;
+      return { type: 'lobby_returned', ...this.lobbyState() };
+    }
+    // The host may have left during the result screen.
+    if (!this.players.get(this.hostId)?.connected) this.hostId = roster[0].id;
+    return this.start(this.hostId);
   }
 
   matchStartedMessage() {
@@ -601,6 +689,7 @@ export class Room {
       phase: this.phase,
       hostId: this.hostId,
       winnerId: this.winnerId,
+      winningTeam: this.winningTeam,
       players: [...this.players.values()].map((player) => publicPlayer(player, now)),
       // Loot is static and numerous, so it is sent once with the map and then
       // maintained from `pickup` events. Repeating thousands of unchanged items
@@ -623,7 +712,11 @@ export class Room {
       roomCode: this.code,
       hostId: this.hostId,
       phase: this.phase,
-      players: [...this.players.values()].map((player) => ({ id: player.id, name: player.name, connected: player.connected })),
+      hostName: this.players.get(this.hostId)?.name ?? null,
+      minPlayers: CONFIG.minRoomPlayers,
+      players: [...this.players.values()].map((player) => ({
+        id: player.id, name: player.name, connected: player.connected, team: player.team ?? null,
+      })),
     };
   }
 }
@@ -648,6 +741,24 @@ export class GameManager {
     if (room.players.size >= CONFIG.maxRoomPlayers) throw new Error('This room is at the tested safety limit.');
     room.addPlayer(playerId, name);
     return room;
+  }
+
+  // Open rooms a player could join, newest first. Only the details the welcome
+  // screen shows, so this stays cheap to send on every refresh.
+  roomListing() {
+    const rooms = [...this.rooms.values()]
+      .filter((room) => [...room.players.values()].some((player) => player.connected))
+      .filter((room) => room.players.size < CONFIG.maxRoomPlayers)
+      .map((room) => ({
+        code: room.code,
+        hostName: room.players.get(room.hostId)?.name ?? 'Gardener',
+        players: [...room.players.values()].filter((player) => player.connected).length,
+        capacity: CONFIG.maxRoomPlayers,
+        phase: room.phase,
+      }))
+      .sort((a, b) => b.players - a.players)
+      .slice(0, 20);
+    return { type: 'room_list', rooms };
   }
 
   createRoomCode() {

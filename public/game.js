@@ -13,6 +13,7 @@ const elements = Object.fromEntries([
   'lobby', 'copy-code', 'player-list', 'start', 'waiting', 'hud', 'hud-room', 'storm-label',
   'storm-time', 'ping', 'health-fill', 'health', 'flower-card', 'flower-icon', 'flower', 'ammo',
   'announcement', 'announcement-kicker', 'announcement-title', 'announcement-copy', 'toast', 'controls',
+  'room-list', 'rooms-empty', 'refresh-rooms', 'lobby-host-name',
 ].map((id) => [id, document.getElementById(id)]));
 
 import { EMPTY_INPUT, stepPlayer } from './shared/simulation.js';
@@ -106,6 +107,7 @@ function connect() {
   socket.addEventListener('open', () => {
     state.connected = true;
     setConnection('online', 'Server online');
+    requestRooms();
     clearInterval(state.pingTimer);
     state.pingTimer = setInterval(() => send({ type: 'ping', sentAt: Date.now() }), 3_000);
   });
@@ -140,8 +142,18 @@ function receive(message) {
     state.roomCode = message.roomCode;
     state.isHost = message.isHost;
     showLobby();
-  } else if (message.type === 'lobby') {
+  } else if (message.type === 'room_list') {
+    renderRoomList(message.rooms ?? []);
+  } else if (message.type === 'lobby' || message.type === 'lobby_returned') {
     state.isHost = message.hostId === state.playerId;
+    if (message.type === 'lobby_returned') {
+      state.phase = 'lobby';
+      elements.hud.hidden = true;
+      elements.controls.hidden = true;
+      elements.announcement.hidden = true;
+      elements.lobby.hidden = false;
+      elements.game.style.cursor = '';
+    }
     updateLobby(message);
   } else if (message.type === 'match_started') {
     projectiles.clear();
@@ -229,6 +241,7 @@ function showLobby() {
 
 function updateLobby(message) {
   if (state.phase !== 'lobby') return;
+  elements['lobby-host-name'].textContent = message.hostName ?? '—';
   elements['player-list'].replaceChildren(...message.players.map((player) => {
     const item = document.createElement('li');
     item.append(document.createTextNode(player.name));
@@ -239,8 +252,53 @@ function updateLobby(message) {
     }
     return item;
   }));
+  // A match needs two sides, so the host cannot start alone.
+  const minimum = message.minPlayers ?? 2;
+  const ready = message.players.length >= minimum;
   elements.start.hidden = !state.isHost;
+  elements.start.disabled = !ready;
+  elements.start.textContent = ready ? 'Start match' : `Waiting for ${minimum} players`;
   elements.waiting.hidden = state.isHost;
+}
+
+// ── room browser ────────────────────────────────────────────────────────────
+function requestRooms() {
+  if (state.phase === 'menu') send({ type: 'list_rooms' });
+}
+
+function renderRoomList(rooms) {
+  const open = rooms.filter((room) => room.phase !== 'ended');
+  elements['rooms-empty'].hidden = open.length > 0;
+  elements['room-list'].replaceChildren(...open.map((room) => {
+    const item = document.createElement('li');
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'room-entry';
+
+    const code = document.createElement('span');
+    code.className = 'room-code-tag';
+    code.textContent = room.code;
+
+    const host = document.createElement('span');
+    host.className = 'room-host';
+    host.textContent = room.hostName;
+
+    const count = document.createElement('span');
+    count.className = 'room-count';
+    count.textContent = `${room.players} ${room.players === 1 ? 'player' : 'players'}`;
+
+    const status = document.createElement('span');
+    status.className = `room-status ${room.phase}`;
+    status.textContent = room.phase === 'playing' ? 'In progress' : 'Open';
+
+    button.append(code, host, count, status);
+    button.addEventListener('click', () => {
+      elements['room-code'].value = room.code;
+      send({ type: 'join_room', name: elements.name.value, roomCode: room.code });
+    });
+    item.append(button);
+    return item;
+  }));
 }
 
 function me() {
@@ -304,8 +362,14 @@ function updateHud() {
     const target = state.snapshot.players.find((candidate) => candidate.id === player.spectatorTargetId);
     announce('ELIMINATED', 'The garden grows on', target ? `Spectating ${target.name}` : 'Waiting for the next match');
   } else if (state.snapshot.phase === 'ended') {
-    const winner = state.snapshot.players.find((candidate) => candidate.id === state.snapshot.winnerId);
-    announce('MATCH COMPLETE', winner?.id === state.playerId ? 'You survived' : `${winner?.name ?? 'No one'} survived`, 'The host can create a new room for another garden.');
+    // Won by a side now, not a lone survivor, and the room restarts itself, so
+    // the result screen counts down rather than asking the host to do anything.
+    const winning = state.snapshot.winningTeam;
+    const mine = state.snapshot.players.find((candidate) => candidate.id === state.playerId)?.team;
+    const title = !winning ? 'Nobody survived'
+      : winning === mine ? `${TEAM_NAMES[winning]} team wins` : `${TEAM_NAMES[winning]} team wins`;
+    const kicker = winning && winning === mine ? 'VICTORY' : winning ? 'DEFEAT' : 'MATCH COMPLETE';
+    announce(kicker, title, 'The next match starts automatically.');
   } else {
     elements.announcement.hidden = true;
   }
@@ -385,11 +449,12 @@ function loadImage(source) {
 async function loadArt() {
   try {
     const atlas = await (await fetch('assets/atlas.json')).json();
-    const [skins, weapons] = await Promise.all([
+    const [skins, weapons, seed] = await Promise.all([
       loadImage(atlas.skins.image),
       loadImage(atlas.weapons.image),
+      loadImage('assets/flower-seed.png'),
     ]);
-    Object.assign(art, { atlas, skins, weapons, ready: true });
+    Object.assign(art, { atlas, skins, weapons, seed, ready: true });
   } catch (error) {
     // Flat shapes still render, so a missing sheet costs looks, not play.
     console.warn('character art unavailable, falling back to shapes', error);
@@ -462,6 +527,8 @@ function drawStorm() {
 }
 
 const PICKUP_ART = { rifle: 'rifle', ammo: 'magazine' };
+const TEAM_COLOURS = { blue: '#5aa3ff', red: '#ff5d5d' };
+const TEAM_NAMES = { blue: 'Blue', red: 'Red' };
 
 function drawPickup(pickup) {
   const position = worldToScreen(pickup);
@@ -474,6 +541,17 @@ function drawPickup(pickup) {
   context.arc(0, 0, 24 * state.scale, 0, Math.PI * 2);
   context.fill();
   context.stroke();
+
+  // Seeds are a fraction of the loot on the ground and were a small flat disc
+  // among hundreds of weapon sprites, which made them near impossible to spot.
+  // They now use the same artwork the inventory shows them growing from.
+  if (pickup.kind === 'seed' && art.seed) {
+    const height = state.config.playerRadius * state.scale * 1.9;
+    const seedWidth = art.seed.width / art.seed.height * height;
+    context.drawImage(art.seed, -seedWidth / 2, -height / 2, seedWidth, height);
+    context.restore();
+    return;
+  }
 
   const artName = PICKUP_ART[pickup.kind];
   if (art.ready && artName) {
@@ -611,12 +689,18 @@ function drawPlayer(player) {
   }
 
   // Cleared the sprite, which is wider than the collision radius.
+  // Health and name in the player's own team colour, and marked when they are
+  // on your side: with two sides in matching kit, telling a teammate from an
+  // opponent has to be possible in the instant before you decide to fire.
   const labelGap = radius * 1.8;
-  context.fillStyle = PALETTE.forestDark;
+  const mine = state.frameTargets?.find((candidate) => candidate.id === state.playerId);
+  const friendly = Boolean(player.team) && player.team === mine?.team;
+  const teamColour = TEAM_COLOURS[player.team] ?? PALETTE.pink;
+  context.fillStyle = 'rgba(9, 14, 19, 0.75)';
   context.fillRect(position.x - 20, position.y - labelGap - 10, 40, 4);
-  context.fillStyle = PALETTE.pink;
+  context.fillStyle = teamColour;
   context.fillRect(position.x - 20, position.y - labelGap - 10, 40 * player.hp / 100, 4);
-  context.fillStyle = PALETTE.cream;
+  context.fillStyle = friendly ? teamColour : PALETTE.cream;
   context.font = '700 11px system-ui';
   context.textAlign = 'center';
   context.fillText(player.name, position.x, position.y + labelGap + 14);
@@ -959,8 +1043,12 @@ window.addEventListener('mouseup', (event) => { if (event.button === 0) state.fi
 window.addEventListener('contextmenu', (event) => event.preventDefault());
 window.addEventListener('resize', resize);
 
+elements['refresh-rooms'].addEventListener('click', requestRooms);
+
 resize();
 setInterval(sendInput, 1_000 / 30);
+// The welcome screen keeps its list of open gardens current on its own.
+setInterval(requestRooms, 4_000);
 loadArt();
 loadWorldArt();
 connect();

@@ -92,6 +92,28 @@ export function drawWorldFloor(context, map, camera, scale, width, height) {
       }
     }
   }
+
+  // Territory wash: blue owns the left half, red the right. Laid over the tiles
+  // inside the same clip, so it stops at the arena edge and a player can tell
+  // at a glance which half of the map they are fighting in.
+  const middle = screenPoint({ x: map.width / 2, y: 0 }, camera, scale, width, height).x;
+  const arenaTop = topLeft.y;
+  const arenaHeight = map.height * scale;
+  context.globalAlpha = 1;
+  for (const [side, colour] of [['left', 'rgba(58, 118, 214, 0.16)'], ['right', 'rgba(214, 62, 72, 0.16)']]) {
+    const from = side === 'left' ? topLeft.x : middle;
+    const span = side === 'left' ? middle - topLeft.x : (topLeft.x + map.width * scale) - middle;
+    if (span <= 0) continue;
+    const gradient = context.createLinearGradient(
+      side === 'left' ? from : from + span, 0, side === 'left' ? from + span : from, 0,
+    );
+    // Strongest at each team's own edge and fading toward the middle, so the
+    // halfway line reads as contested rather than as a hard border.
+    gradient.addColorStop(0, colour);
+    gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    context.fillStyle = gradient;
+    context.fillRect(from, arenaTop, span, arenaHeight);
+  }
   context.restore();
 }
 

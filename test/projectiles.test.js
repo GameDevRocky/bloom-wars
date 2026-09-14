@@ -16,10 +16,15 @@ function arena(ids = ['host']) {
     phase: 'holding', phaseStartedAt: now, cycle: 1,
     to: { x: 2_000, y: 1_000, radius: 10_000 },
   };
-  for (const id of ids) {
+  // Opposite sides by default: these exercise shots landing on people, and
+  // teammates deliberately do not stop or take each other's fire.
+  ids.forEach((id, index) => {
     const player = room.addPlayer(id, id);
-    Object.assign(player, { x: 100, y: 100, alive: true, hasRifle: true, magazine: 30 });
-  }
+    Object.assign(player, {
+      x: 100, y: 100, alive: true, hasRifle: true, magazine: 30,
+      team: index === 0 ? 'blue' : 'red',
+    });
+  });
   return {
     room,
     now: () => now,

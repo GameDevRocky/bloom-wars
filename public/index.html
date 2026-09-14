@@ -21,20 +21,31 @@
         <input id="name" maxlength="18" autocomplete="nickname" placeholder="Gardener">
 
         <div class="actions">
-          <button id="create" class="primary">Create private room</button>
+          <button id="create" class="primary">Create a room</button>
           <span>or</span>
           <div class="join-row">
             <input id="room-code" maxlength="5" aria-label="Room code" placeholder="CODE">
             <button id="join">Join</button>
           </div>
         </div>
+
+        <section class="room-browser" aria-labelledby="rooms-title">
+          <div class="rooms-head">
+            <h2 id="rooms-title">Open gardens</h2>
+            <button id="refresh-rooms" type="button" title="Refresh the list">Refresh</button>
+          </div>
+          <ul id="room-list" aria-live="polite"></ul>
+          <p id="rooms-empty">No gardens open yet — create one and share the code.</p>
+        </section>
+
         <p class="connection"><span id="connection-dot"></span><span id="connection-label">Connecting...</span></p>
       </section>
 
       <section class="shell lobby" id="lobby" hidden aria-labelledby="lobby-title">
         <p class="eyebrow">Private garden</p>
         <h2 id="lobby-title">Room <button id="copy-code" title="Copy room code"></button></h2>
-        <p class="lobby-note">Share this code. The host starts when everyone is ready.</p>
+        <p class="lobby-note">Share this code. Sides are drawn when the match begins.</p>
+        <p class="lobby-host">Hosted by <strong id="lobby-host-name">—</strong></p>
         <ol id="player-list"></ol>
         <button id="start" class="primary">Start match</button>
         <p id="waiting">Waiting for the host...</p>
