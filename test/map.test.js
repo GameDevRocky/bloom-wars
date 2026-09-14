@@ -35,6 +35,7 @@ test('expanded worlds preserve the populated starting garden and add outer cover
       && point.y >= region.y && point.y <= region.y + region.height;
     assert.ok(map.spawns.every(inside));
     assert.ok(map.obstacles.filter(inside).length >= 40 + count * 6);
+    assert.equal(map.obstacles.length, (40 + count * 6) * 20);
     assert.ok(map.obstacles.some((obstacle) => !inside(obstacle)));
     for (const kind of ['rifle', 'ammo', 'seed']) {
       assert.ok(map.pickups.filter((pickup) => pickup.kind === kind && inside(pickup)).length >= count,
@@ -44,4 +45,16 @@ test('expanded worlds preserve the populated starting garden and add outer cover
     assert.ok(map.pickups.filter((pickup) => pickup.kind === 'ammo' && inside(pickup)).length >= Math.max(count * 4, 16));
     assert.deepEqual(validateMap(map), { valid: true, issues: [] });
   }
+});
+
+test('twenty-times cover is distributed throughout every outer-world quadrant', () => {
+  const map = generateMap(1, 'outer-distribution');
+  const center = map.width / 2;
+  const quadrants = [0, 0, 0, 0];
+  for (const obstacle of map.obstacles) {
+    const x = obstacle.x + obstacle.width / 2;
+    const y = obstacle.y + obstacle.height / 2;
+    quadrants[Number(x >= center) + Number(y >= center) * 2] += 1;
+  }
+  assert.ok(quadrants.every((count) => count > 150), `expected broad random coverage, got ${quadrants}`);
 });
