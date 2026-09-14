@@ -12,6 +12,13 @@
 
 * { box-sizing: border-box; }
 
+/* The hidden attribute is how every panel here is shown and hidden, but the
+   browser implements it as a plain [hidden] { display: none } rule, which any
+   id or class selector setting a display outranks. One such rule left the
+   restart countdown permanently on screen, over the welcome screen and the
+   lobby. This makes the attribute win wherever it is used. */
+[hidden] { display: none !important; }
+
 html, body, main {
   width: 100%;
   height: 100%;
