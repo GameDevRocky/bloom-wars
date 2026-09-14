@@ -373,3 +373,31 @@ test('a match ends when one side is wiped out, and the room restarts itself', ()
   assert.equal(room.phase, 'playing');
   for (const player of room.players.values()) assert.equal(player.alive, true);
 });
+
+// Teams start against opposite edges, and the furthest of those positions sat
+// outside a circle inscribed in the map, so players began matches already
+// losing health. The opening circle now has to contain the arena's corners.
+test('nobody starts a match outside the storm', () => {
+  for (const size of [2, 8, 24]) {
+    const ids = Array.from({ length: size }, (_, index) => (index === 0 ? 'host' : `p${index}`));
+    const { room } = controlledRoom(ids);
+    room.start('host');
+
+    const opening = room.storm.from;
+    const corner = Math.hypot(room.map.width, room.map.height) / 2;
+    assert.ok(opening.radius >= corner,
+      `opening circle ${Math.round(opening.radius)} must reach the corner at ${Math.round(corner)}`);
+
+    for (const player of room.players.values()) {
+      const distance = Math.hypot(player.x - opening.x, player.y - opening.y);
+      assert.ok(distance <= opening.radius,
+        `${size} players: one spawned ${Math.round(distance)} out in a ${Math.round(opening.radius)} circle`);
+    }
+
+    // Nobody should be taking damage on the first tick either.
+    room.tick(1 / CONFIG.tickRate);
+    for (const player of room.players.values()) {
+      assert.equal(player.hp, CONFIG.maxHp, 'a player took storm damage at the start of a match');
+    }
+  }
+});

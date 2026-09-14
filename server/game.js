@@ -197,14 +197,24 @@ export class Room {
       seated[player.team] += 1;
       this.resetPlayer(player, position, now);
     }
+    // The opening circle has to reach the arena's corners, not just its edges:
+    // teams start against opposite sides, and the furthest of those positions
+    // sat outside a circle inscribed in the map, so a player could begin a
+    // match already taking storm damage.
+    const centre = { x: map.width / 2, y: map.height / 2 };
+    const halfDiagonal = Math.hypot(map.width, map.height) / 2;
     this.storm = {
       phase: 'contracting',
       phaseStartedAt: now,
-      from: { x: map.width / 2, y: map.height / 2, radius: map.width * 0.49 },
+      from: { ...centre, radius: halfDiagonal * CONFIG.storm.openingMargin },
       to: null,
       cycle: 1,
     };
-    this.storm.to = this.nextStormTarget(this.storm.from);
+    // Measured from the inscribed circle rather than that oversized opening, so
+    // the first contraction still finishes where it always did. Sizing it off
+    // the opening instead would spend a whole cycle shrinking through corners
+    // nobody is standing in.
+    this.storm.to = this.nextStormTarget({ ...centre, radius: map.width * 0.49 });
     return this.matchStartedMessage();
   }
 

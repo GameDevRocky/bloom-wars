@@ -70,6 +70,9 @@ export const CONFIG = Object.freeze({
     radiusScale: 0.58,
     minimumRadius: 105,
     maxBoundarySpeedRatio: 0.65,
+    // Slack on the opening circle, which is sized to the arena's half-diagonal
+    // so every corner is inside it at the start of a match.
+    openingMargin: 1.02,
   }),
   map: Object.freeze({
     // Twenty times the previous width and height; player and tile sizes stay
