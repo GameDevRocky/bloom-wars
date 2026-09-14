@@ -29,9 +29,12 @@ test('maps scale with population and preserve valid spawn routes', () => {
   assert.deepEqual(validateMap(large), { valid: true, issues: [] });
 });
 
-test('generated loot covers rifles, ammunition, and seeds', () => {
+test('generated loot covers ammunition and seeds, and scatters no rifles', () => {
   const map = generateMap(6, 'loot');
-  for (const kind of ['rifle', 'ammo', 'seed']) {
+  // Players spawn armed and cannot lose a rifle, so one on the ground could
+  // never be collected.
+  assert.equal(map.pickups.filter((pickup) => pickup.kind === 'rifle').length, 0);
+  for (const kind of ['ammo', 'seed']) {
     assert.ok(map.pickups.filter((pickup) => pickup.kind === kind).length >= 6);
   }
 });

@@ -45,6 +45,10 @@ export const CONFIG = Object.freeze({
     muzzleForward: 34,
     muzzleSide: 1.75,
     spreadRadians: 0.035,
+    // Everyone starts armed, so the opening minutes are about position rather
+    // than a scramble to find a weapon. A spare magazine covers the first
+    // engagement; anything beyond that still has to be scavenged.
+    startingReserveAmmo: 30,
   }),
   flower: Object.freeze({
     startingHeal: 1,

@@ -155,8 +155,10 @@ export function generateMap(playerCount, seed = `${Date.now()}`) {
   const totalDensity = perMillion.rifle + perMillion.ammo + perMillion.seed;
   const pickupBudget = Math.min(CONFIG.map.maxPickups, Math.round(areaInMillions * totalDensity));
   let pickups = [];
+  // Rifles are deliberately absent: every player spawns with one and there is
+  // no way to lose it, so a rifle on the ground could never be picked up and
+  // would only be scenery in the way of the loot that matters.
   for (const [kind, density, floor] of [
-    ['rifle', perMillion.rifle, Math.max(count * perPlayer.rifle, floors.rifle)],
     ['ammo', perMillion.ammo, Math.max(count * perPlayer.ammo, floors.ammo)],
     ['seed', perMillion.seed, Math.max(count * perPlayer.seed, floors.seed)],
   ]) {

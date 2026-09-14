@@ -14,13 +14,17 @@ function controlledRoom(playerIds = ['host', 'guest']) {
   return { room, now: () => time, advance: (milliseconds) => { time += milliseconds; } };
 }
 
-test('only the host can start and all players begin unarmed at full health', () => {
+test('only the host can start and all players begin armed at full health', () => {
   const { room } = controlledRoom();
   assert.throws(() => room.start('guest'), /Only the host/);
   room.start('host');
   for (const player of room.players.values()) {
     assert.equal(player.hp, 100);
-    assert.equal(player.hasRifle, false);
+    // Everyone spawns with a rifle and a spare magazine; the opening is about
+    // position, not a race to find a weapon.
+    assert.equal(player.hasRifle, true);
+    assert.equal(player.magazine, CONFIG.rifle.magazineSize);
+    assert.equal(player.reserveAmmo, CONFIG.rifle.startingReserveAmmo);
     assert.equal(player.alive, true);
   }
 });

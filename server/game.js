@@ -229,9 +229,9 @@ export class Room {
       input: { ...EMPTY_INPUT },
       inputQueue: [],
       inputCredits: 0,
-      hasRifle: false,
-      magazine: 0,
-      reserveAmmo: 0,
+      hasRifle: true,
+      magazine: CONFIG.rifle.magazineSize,
+      reserveAmmo: CONFIG.rifle.startingReserveAmmo,
       lastShotAt: -Infinity,
       reloadEndsAt: 0,
       flowerCollectedAt: null,
@@ -412,7 +412,7 @@ export class Room {
       if (pickup.kind === 'rifle' && !player.hasRifle) {
         player.hasRifle = true;
         player.magazine = CONFIG.rifle.magazineSize;
-      } else if (pickup.kind === 'ammo' && player.hasRifle) {
+      } else if (pickup.kind === 'ammo') {
         player.reserveAmmo += CONFIG.rifle.magazineSize;
         if (player.magazine === 0) this.startReload(player, now, 'ammo_pickup');
       } else if (pickup.kind === 'seed' && player.flowerCollectedAt === null) {
