@@ -52,6 +52,9 @@ const state = {
   config: null,
   // Loot by id, seeded from the map and pruned as pickups are collected.
   pickups: new Map(),
+  // Last drawn flower stage. Undefined until the first HUD update, so joining
+  // mid-match with a grown flower does not play the opening animation.
+  flowerStage: undefined,
   keys: new Set(),
   firing: false,
   shotSequence: 0,
@@ -281,8 +284,8 @@ function updateHud() {
 
   const heal = player.flowerHeal;
   elements.flower.textContent = heal === null ? 'EMPTY' : `${heal} HP`;
-  elements['flower-icon'].className = `flower-icon ${heal === null ? '' : heal <= 16 ? 'seed' : heal <= 33 ? 'budding' : 'bloomed'}`;
   elements['flower-card'].style.opacity = heal === null ? '0.46' : '1';
+  updateFlowerIcon(heal);
 
   const storm = state.snapshot.storm;
   if (storm) {
@@ -309,6 +312,28 @@ function updateHud() {
   for (const event of state.snapshot.events ?? []) {
     if (event.type === 'pickup' && event.playerId === state.playerId) toast(event.kind === 'seed' ? 'Seed carried - press E to heal' : `${event.kind} collected`);
   }
+}
+
+// The carried flower matures from seed to bloom over roughly a hundred seconds,
+// so the inventory shows it growing rather than only naming a number: it scales
+// steadily with the healing it holds, and plays a one-off opening when it
+// reaches the next stage. Deciding whether to spend it now or wait is the
+// choice the whole flower mechanic rests on, so that growth needs to be visible.
+function updateFlowerIcon(heal) {
+  const icon = elements['flower-icon'];
+  const stage = heal === null ? '' : heal <= 16 ? 'seed' : heal <= 33 ? 'budding' : 'bloomed';
+  const maxHeal = state.config?.flower.maxHeal ?? 50;
+  icon.dataset.stage = stage;
+  icon.style.setProperty('--flower-grow', heal === null ? '1' : (0.58 + 0.42 * Math.min(1, heal / maxHeal)).toFixed(3));
+
+  if (stage && stage !== state.flowerStage && state.flowerStage !== undefined) {
+    // Restarting a running animation needs the class dropped and the element
+    // reflowed, or the browser treats it as still the same animation.
+    icon.classList.remove('blooming');
+    void icon.offsetWidth;
+    icon.classList.add('blooming');
+  }
+  state.flowerStage = stage;
 }
 
 function announce(kicker, title, copy) {
