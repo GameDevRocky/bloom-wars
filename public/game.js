@@ -54,6 +54,7 @@ const state = {
   lastEmptyAt: -Infinity,
   predictedShots: new Map(),
   predictedEmpty: new Set(),
+  hitFlashes: new Map(),
   aim: 0,
   inputSequence: 0,
   // Local simulation of our own player, run ahead of the server.
@@ -140,6 +141,7 @@ function receive(message) {
     state.pending = [];
     state.predictedShots.clear();
     state.predictedEmpty.clear();
+    state.hitFlashes.clear();
     state.lastLocalShotAt = -Infinity;
     state.predicted = null;
     state.correction = { x: 0, y: 0 };
@@ -170,6 +172,10 @@ function receive(message) {
     for (const clientShotId of locallyPredicted) state.predictedShots.delete(clientShotId);
     for (const event of message.events ?? []) {
       if (event.type === 'empty_fire' && event.clientShotId) state.predictedEmpty.delete(event.clientShotId);
+      if (event.type === 'damage') state.hitFlashes.set(event.playerId, { at: arrival, amount: event.amount });
+    }
+    for (const [playerId, flash] of state.hitFlashes) {
+      if (arrival - flash.at > 1_000) state.hitFlashes.delete(playerId);
     }
 
     // Timestamped on arrival: interpolation runs on the local clock, so it
@@ -534,11 +540,19 @@ function drawPlayer(player) {
   context.ellipse(0, 3 * state.scale, radius * 1.04, radius * 0.88, player.aim, 0, Math.PI * 2);
   context.fill();
   const shotAge = projectiles.shotAge(player.id, player.id === state.playerId ? performance.now() : state.renderTime);
+  const hitAge = performance.now() - (state.hitFlashes.get(player.id)?.at ?? -Infinity);
+  const hitStrength = Math.max(0, 1 - hitAge / 180);
+  context.save();
+  if (hitStrength > 0) {
+    context.filter = `brightness(${1 + hitStrength * 2.4}) saturate(${1 - hitStrength * 0.72}) drop-shadow(0 0 ${5 * hitStrength}px #ff5d73)`;
+  }
   if (art.ready) drawSpriteCharacter(context, player, radius, art, {
     recoil: Math.max(0, 1 - shotAge / 110),
     stride: Math.sin(state.lastFrame / 85) * Math.min(1, Math.hypot(player.vx ?? 0, player.vy ?? 0) / 225),
   });
   else drawFallbackCharacter(player, radius);
+  context.restore();
+  if (hitStrength > 0) drawHitFlash(radius, hitAge, hitStrength);
   if (player.hasRifle && shotAge < 65) drawMuzzleFlash(player, shotAge);
   context.restore();
 
@@ -562,6 +576,27 @@ function drawPlayer(player) {
   context.font = '700 11px system-ui';
   context.textAlign = 'center';
   context.fillText(player.name, position.x, position.y + labelGap + 14);
+}
+
+function drawHitFlash(radius, age, strength) {
+  const progress = Math.min(1, age / 180);
+  context.save();
+  context.globalCompositeOperation = 'screen';
+  context.globalAlpha = strength;
+  const glow = context.createRadialGradient(0, 0, radius * 0.15, 0, 0, radius * (1.25 + progress * 0.65));
+  glow.addColorStop(0, 'rgba(255, 255, 255, 0.72)');
+  glow.addColorStop(0.42, 'rgba(255, 93, 115, 0.35)');
+  glow.addColorStop(1, 'rgba(255, 93, 115, 0)');
+  context.fillStyle = glow;
+  context.beginPath();
+  context.arc(0, 0, radius * (1.25 + progress * 0.65), 0, Math.PI * 2);
+  context.fill();
+  context.strokeStyle = '#fff0e8';
+  context.lineWidth = Math.max(1, 2.2 * state.scale * strength);
+  context.beginPath();
+  context.arc(0, 0, radius * (1.05 + progress * 0.8), 0, Math.PI * 2);
+  context.stroke();
+  context.restore();
 }
 
 function drawMuzzleFlash(player, age) {
