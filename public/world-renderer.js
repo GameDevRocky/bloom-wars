@@ -116,8 +116,8 @@ export function drawTeamTint(context, map, camera, scale, width, height) {
   context.rect(topLeft.x, top, map.width * scale, arenaHeight);
   context.clip();
   for (const [from, to, colour] of [
-    [topLeft.x, middle, 'rgba(74, 143, 255, 0.10)'],
-    [middle, right, 'rgba(255, 74, 84, 0.10)'],
+    [topLeft.x, middle, 'rgba(74, 143, 255, 0.05)'],
+    [middle, right, 'rgba(255, 74, 84, 0.05)'],
   ]) {
     const span = to - from;
     if (span <= 0) continue;
