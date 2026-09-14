@@ -53,8 +53,19 @@ export const CONFIG = Object.freeze({
     worldScale: WORLD_SCALE,
     minimumSize: 1_550 * WORLD_SCALE,
     sizePerExtraPlayer: 115 * WORLD_SCALE,
-    obstacleBase: 40,
-    obstaclesPerPlayer: 6,
+    // Densities per million square units, so cover and loot stay as thick at
+    // the far edge of the arena as they are at the middle. One screen is
+    // roughly two million square units, which puts about twelve pieces of
+    // cover and one item in view.
+    obstaclesPerMillion: 6,
+    pickupsPerMillion: Object.freeze({ rifle: 0.12, ammo: 0.3, seed: 0.14 }),
+    // Ceilings on what one match may contain. The arena widens with population
+    // while these densities are per unit of area, so without a cap the contents
+    // grow with the square of the player count: a full room would ask for over
+    // a hundred thousand obstacles and a multi-megabyte map message. Past the
+    // cap the arena stays evenly covered, just more thinly.
+    maxObstacles: 14_000,
+    maxPickups: 1_400,
     spawnClearance: 90,
     corridorHalfWidth: 55,
   }),

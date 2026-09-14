@@ -302,3 +302,48 @@ test('a rejected local prediction can be removed without affecting other shots',
   assert.equal(playback.tracks.has('predicted:rejected'), false);
   assert.equal(playback.tracks.has('predicted:kept'), true);
 });
+
+// A locally predicted shot never receives another position sample -- the server
+// ones are deliberately ignored so the muzzle does not rewind. Its flight is
+// therefore entirely extrapolated, and capping that would strand the player's
+// own bullets in mid-air a few hundred units out.
+test('a predicted shot keeps flying well past the extrapolation window', () => {
+  const playback = new ProjectilePlayback();
+  const wideMap = { width: 100_000, height: 1_000, obstacles: [] };
+  playback.predictShot({
+    clientShotId: 'c1', ownerId: 'shooter',
+    x: 100, y: 500, vx: 1_840, vy: 0, at: 1_000,
+  });
+
+  // 2 seconds of flight: far beyond the old 250ms ceiling.
+  const head = onlyBullet(playback.frame(3_000, wideMap, 2, {
+    immediateOwnerId: 'shooter', immediateTime: 3_000,
+  }));
+  near(head.x, 100 + 1_840 * 2);
+});
+
+test('an extrapolated shot stops at a body instead of sliding through it', () => {
+  const playback = new ProjectilePlayback();
+  const wideMap = { width: 100_000, height: 1_000, obstacles: [] };
+  playback.predictShot({
+    clientShotId: 'c1', ownerId: 'shooter',
+    x: 100, y: 500, vx: 1_840, vy: 0, at: 1_000,
+  });
+  const blockers = {
+    radius: 16,
+    targets: [
+      { id: 'shooter', alive: true, x: 100, y: 500 },
+      { id: 'victim', alive: true, x: 900, y: 500 },
+    ],
+  };
+
+  const options = { immediateOwnerId: 'shooter', immediateTime: 3_000, blockers };
+  const head = onlyBullet(playback.frame(3_000, wideMap, 2, options));
+  // Stops on the near face of the victim, not at the 3680 it would reach alone.
+  near(head.x, 900 - (16 + 2));
+
+  // The shooter never blocks their own shot.
+  const noVictim = { ...blockers, targets: [blockers.targets[0]] };
+  const clear = onlyBullet(playback.frame(3_000, wideMap, 2, { ...options, blockers: noVictim }));
+  near(clear.x, 100 + 1_840 * 2);
+});

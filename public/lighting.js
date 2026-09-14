@@ -1,4 +1,5 @@
 import { segmentRectHitTime, segmentBoundsExitTime, sweptCircleRectHitTime } from './shared/projectiles.js';
+import { obstacleGridFor } from './shared/obstacle-grid.js';
 
 export function clippedMuzzle(player, rifle, map) {
   const cos = Math.cos(player.aim), sin = Math.sin(player.aim);
@@ -7,16 +8,16 @@ export function clippedMuzzle(player, rifle, map) {
     y: player.y + rifle.muzzleForward * sin + rifle.muzzleSide * cos,
   };
   let fraction = segmentBoundsExitTime(player, end, map.width, map.height, rifle.bulletRadius) ?? 1;
-  for (const obstacle of map.obstacles) {
+  obstacleGridFor(map).forEachAlong(player, end, rifle.bulletRadius, (obstacle) => {
     fraction = Math.min(fraction, sweptCircleRectHitTime(player, end, rifle.bulletRadius, obstacle) ?? 1);
-  }
+  });
   return { x: player.x + (end.x - player.x) * fraction, y: player.y + (end.y - player.y) * fraction };
 }
 
 // A light stops at the same rectangular cover and arena bounds as gameplay.
 // Corner rays keep hard shadow edges stable as the player moves and aims.
 export function lightVisibility(origin, radius, map) {
-  const obstacles = map.obstacles.filter((rect) => {
+  const obstacles = obstacleGridFor(map).collectAround(origin, radius).filter((rect) => {
     const x = Math.max(rect.x, Math.min(origin.x, rect.x + rect.width));
     const y = Math.max(rect.y, Math.min(origin.y, rect.y + rect.height));
     return (origin.x - x) ** 2 + (origin.y - y) ** 2 <= radius ** 2;
@@ -38,6 +39,11 @@ export function lightVisibility(origin, radius, map) {
     return { x: origin.x + (end.x - origin.x) * fraction, y: origin.y + (end.y - origin.y) * fraction };
   });
 }
+
+// Ambient light, multiplied over the world. This is the only thing lighting an
+// unarmed player, who casts none of their own, so it sets how dark the game can
+// go before the opening of a match stops being playable.
+const AMBIENT = '#4a5468';
 
 export class WorldLighting {
   constructor() {
@@ -63,7 +69,7 @@ export class WorldLighting {
     const lightContext = this.context;
     lightContext.setTransform(resolution, 0, 0, resolution, 0, 0);
     lightContext.globalCompositeOperation = 'source-over';
-    lightContext.fillStyle = '#8796aa';
+    lightContext.fillStyle = AMBIENT;
     lightContext.fillRect(0, 0, width, height);
     lightContext.globalCompositeOperation = 'lighter';
 
@@ -96,7 +102,9 @@ export class WorldLighting {
         lightContext.fillStyle = gradient;
         lightContext.fillRect(position.x - r, position.y - r, 2 * r, 2 * r);
       };
-      radial(light.halo ?? light.radius, light.color, light.strength);
+      // halo: null means the light has no glow of its own and is purely the
+      // aimed cone below, so a player carries a torch rather than wearing one.
+      if (light.halo !== null) radial(light.halo ?? light.radius, light.color, light.strength);
       if (light.aim !== undefined) {
         lightContext.save();
         lightContext.beginPath();
@@ -115,8 +123,11 @@ export class WorldLighting {
     const nearbyPlayers = players.filter((player) => player.alive && visible(player, 380))
       .sort((a, b) => Number(b.id === focusId) - Number(a.id === focusId) || distance(a) - distance(b)).slice(0, 6);
     for (const player of nearbyPlayers) {
-      paintLight({ ...player, radius: player.hasRifle ? 380 : 165, halo: 165,
-        color: '137, 157, 180', strength: 0.95, aim: player.hasRifle ? player.aim : undefined });
+      // Only an armed player lights anything, and only along the barrel.
+      // Unarmed players are lit by ambient alone.
+      if (!player.hasRifle) continue;
+      paintLight({ ...player, radius: 380, halo: null,
+        color: '137, 157, 180', strength: 0.95, aim: player.aim });
       const age = shotAge(player.id);
       if (player.hasRifle && age >= 0 && age < 95) {
         paintLight({

@@ -1,6 +1,7 @@
 import { CONFIG } from './config.js';
 import { circleIntersectsRect, distanceSquared, pointInsideRect } from './geometry.js';
 import { createRandom, randomBetween, shuffle } from './random.js';
+import { ObstacleGrid } from '../public/shared/obstacle-grid.js';
 
 function candidateIsClear(candidate, obstacles, reserved, padding = 18) {
   const circle = { ...candidate, radius: candidate.radius ?? padding };
@@ -28,17 +29,53 @@ function insideGuaranteedCorridor(candidate, size, padding) {
   return Math.abs(candidate.x - center) < half || Math.abs(candidate.y - center) < half;
 }
 
+// A coarse bucket index over already-placed items, so each new candidate is
+// only compared against its neighbours. Placement is otherwise quadratic, which
+// an evenly populated arena of tens of thousands of obstacles cannot afford.
+function createIndex(cellSize) {
+  const cells = new Map();
+  const key = (x, y) => `${Math.floor(x / cellSize)}:${Math.floor(y / cellSize)}`;
+  return {
+    add(item, x, y) {
+      const bucket = cells.get(key(x, y));
+      if (bucket) bucket.push(item);
+      else cells.set(key(x, y), [item]);
+    },
+    near(x, y, reach = cellSize) {
+      const found = [];
+      const span = Math.ceil(reach / cellSize);
+      const cx = Math.floor(x / cellSize);
+      const cy = Math.floor(y / cellSize);
+      for (let dy = -span; dy <= span; dy += 1) {
+        for (let dx = -span; dx <= span; dx += 1) {
+          const bucket = cells.get(`${cx + dx}:${cy + dy}`);
+          if (bucket) found.push(...bucket);
+        }
+      }
+      return found;
+    },
+  };
+}
+
 function placeObstacles(size, count, random, spawns, obstacles = [], protectedRegion = null) {
+  const index = createIndex(180);
+  for (const existing of obstacles) index.add(existing, existing.x, existing.y);
+  const spawnIndex = createIndex(400);
+  for (const spawn of spawns) spawnIndex.add(spawn, spawn.x, spawn.y);
+
   let attempts = 0;
-  while (obstacles.length < count && attempts < count * 80) {
+  while (obstacles.length < count && attempts < count * 40) {
     attempts += 1;
-    const width = randomBetween(random, 45, 125);
-    const height = randomBetween(random, 38, 105);
+    // Whole units throughout: cover is metres across, so fractional positions
+    // buy nothing and each one costs a dozen characters in a map message that
+    // now carries thousands of obstacles.
+    const width = Math.round(randomBetween(random, 45, 125));
+    const height = Math.round(randomBetween(random, 38, 105));
     const obstacle = {
       id: `o${obstacles.length}`,
       kind: random() < 0.58 ? 'hedge' : random() < 0.7 ? 'rock' : 'wall',
-      x: randomBetween(random, 55, size - width - 55),
-      y: randomBetween(random, 55, size - height - 55),
+      x: Math.round(randomBetween(random, 55, size - width - 55)),
+      y: Math.round(randomBetween(random, 55, size - height - 55)),
       width,
       height,
     };
@@ -49,32 +86,36 @@ function placeObstacles(size, count, random, spawns, obstacles = [], protectedRe
       && obstacle.y < protectedRegion.y + protectedRegion.height + 24
       && obstacle.y + height + 24 > protectedRegion.y) continue;
     if (insideGuaranteedCorridor(center, size, center.radius)) continue;
-    if (spawns.some((spawn) => circleIntersectsRect(spawn, obstacle, 35))) continue;
-    if (obstacles.some((existing) => (
+    if (spawnIndex.near(obstacle.x, obstacle.y, 500).some((spawn) => circleIntersectsRect(spawn, obstacle, 35))) continue;
+    if (index.near(obstacle.x, obstacle.y, 300).some((existing) => (
       obstacle.x < existing.x + existing.width + 24
       && obstacle.x + obstacle.width + 24 > existing.x
       && obstacle.y < existing.y + existing.height + 24
       && obstacle.y + obstacle.height + 24 > existing.y
     ))) continue;
     obstacles.push(obstacle);
+    index.add(obstacle, obstacle.x, obstacle.y);
   }
   return obstacles;
 }
 
-function placePickups(size, random, obstacles, spawns, kind, count, startIndex) {
+function placePickups(size, random, obstacleGrid, reservedIndex, kind, count, startIndex) {
   const pickups = [];
   let attempts = 0;
-  while (pickups.length < count && attempts < count * 100) {
+  while (pickups.length < count && attempts < count * 60) {
     attempts += 1;
     const candidate = {
       id: `p${startIndex + pickups.length}`,
       kind,
-      x: randomBetween(random, 45, size - 45),
-      y: randomBetween(random, 45, size - 45),
+      x: Math.round(randomBetween(random, 45, size - 45)),
+      y: Math.round(randomBetween(random, 45, size - 45)),
       radius: 15,
     };
-    if (!candidateIsClear(candidate, obstacles, [...spawns, ...pickups], 16)) continue;
+    const nearbyObstacles = obstacleGrid.collectAround(candidate, 180);
+    const reserved = reservedIndex.near(candidate.x, candidate.y, 400);
+    if (!candidateIsClear(candidate, nearbyObstacles, reserved, 16)) continue;
     pickups.push(candidate);
+    reservedIndex.add(candidate, candidate.x, candidate.y);
   }
   return pickups;
 }
@@ -83,40 +124,41 @@ export function generateMap(playerCount, seed = `${Date.now()}`) {
   const count = Math.max(1, Math.min(CONFIG.maxRoomPlayers, playerCount));
   const random = createRandom(seed);
   const size = Math.round(CONFIG.map.minimumSize + Math.max(0, count - 4) * CONFIG.map.sizePerExtraPlayer);
-  // Preserve the populated starting garden at normal gameplay scale. Simply
-  // distributing its loot over the expanded world would put the first rifle
-  // minutes away from unarmed players.
-  const startingSize = size / CONFIG.map.worldScale;
-  const offset = (size - startingSize) / 2;
-  const translate = (item) => ({ ...item, x: item.x + offset, y: item.y + offset });
-  const localSpawns = createSpawns(startingSize, count, random);
-  const obstacleTarget = CONFIG.map.obstacleBase + count * CONFIG.map.obstaclesPerPlayer;
-  const localObstacles = placeObstacles(startingSize, obstacleTarget, random, localSpawns);
-  let localPickups = placePickups(startingSize, random, localObstacles, localSpawns, 'rifle', Math.max(count, 4), 0);
-  localPickups = localPickups.concat(placePickups(startingSize, random, localObstacles, [...localSpawns, ...localPickups], 'ammo', Math.max(count * 4, 16), localPickups.length));
-  localPickups = localPickups.concat(placePickups(startingSize, random, localObstacles, [...localSpawns, ...localPickups], 'seed', Math.max(count, 6), localPickups.length));
-  const spawns = localSpawns.map(translate);
-  const startingRegion = { x: offset, y: offset, width: startingSize, height: startingSize };
-  // Scale cover count with the same 20x linear expansion as the world. The
-  // additional obstacles are sampled across the entire outer arena while the
-  // protected central garden and guaranteed cross-corridors remain intact.
-  const obstacles = placeObstacles(
-    size,
-    obstacleTarget * CONFIG.map.worldScale,
-    random,
-    spawns,
-    localObstacles.map(translate),
-    startingRegion,
+  const spawns = createSpawns(size, count, random);
+
+  // Counts scale with area, not with the world's linear expansion. Scaling
+  // linearly is what left the arena with a crowded middle and bare outskirts:
+  // a 20x wider world holds 400x the space, so 20x the cover spread over it is
+  // twenty times thinner than the centre it was tuned for.
+  const areaInMillions = (size * size) / 1_000_000;
+  const obstacleTarget = Math.min(
+    CONFIG.map.maxObstacles,
+    Math.round(areaInMillions * CONFIG.map.obstaclesPerMillion),
   );
-  let pickups = localPickups.map(translate);
-  for (const [kind, target] of [['rifle', Math.max(count, 4)], ['ammo', Math.max(count * 4, 16)], ['seed', Math.max(count, 6)]]) {
-    pickups = pickups.concat(placePickups(size, random, obstacles, [...spawns, ...pickups], kind, target, pickups.length));
+  const obstacles = placeObstacles(size, obstacleTarget, random, spawns);
+  const obstacleGrid = new ObstacleGrid(obstacles, size, size);
+
+  const reserved = createIndex(400);
+  for (const spawn of spawns) reserved.add(spawn, spawn.x, spawn.y);
+  const perMillion = CONFIG.map.pickupsPerMillion;
+  const totalDensity = perMillion.rifle + perMillion.ammo + perMillion.seed;
+  const pickupBudget = Math.min(CONFIG.map.maxPickups, Math.round(areaInMillions * totalDensity));
+  let pickups = [];
+  for (const [kind, density, floor] of [
+    ['rifle', perMillion.rifle, Math.max(count, 4)],
+    ['ammo', perMillion.ammo, Math.max(count * 4, 16)],
+    ['seed', perMillion.seed, Math.max(count, 6)],
+  ]) {
+    // Each kind keeps its share of the budget, so capping thins the loot table
+    // evenly instead of starving whichever kind is placed last.
+    const target = Math.max(floor, Math.round(pickupBudget * (density / totalDensity)));
+    pickups = pickups.concat(placePickups(size, random, obstacleGrid, reserved, kind, target, pickups.length));
   }
+
   return {
     seed: String(seed),
     width: size,
     height: size,
-    startingRegion,
     obstacles,
     pickups,
     spawns: spawns.map(({ x, y }) => ({ x, y })),

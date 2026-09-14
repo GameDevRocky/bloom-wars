@@ -6,6 +6,7 @@ import {
 import { generateMap, validateMap } from './map.js';
 import { createRandom, randomBetween } from './random.js';
 import { EMPTY_INPUT, readInput, stepPlayer } from '../public/shared/simulation.js';
+import { obstacleGridFor } from '../public/shared/obstacle-grid.js';
 
 // Every input is simulated as exactly one step of this length on both sides, so
 // the client can replay its unacknowledged inputs and arrive at the same
@@ -304,7 +305,7 @@ export class Room {
         continue;
       }
       collected.push(pickup.id);
-      this.events.push({ type: 'pickup', playerId: player.id, kind: pickup.kind });
+      this.events.push({ type: 'pickup', playerId: player.id, kind: pickup.kind, pickupId: pickup.id });
     }
     if (collected.length) this.map.pickups = this.map.pickups.filter((pickup) => !collected.includes(pickup.id));
   }
@@ -367,9 +368,9 @@ export class Room {
     };
     const radius = CONFIG.rifle.bulletRadius;
     consider(segmentBoundsExitTime(start, end, this.map.width, this.map.height, radius), 'bounds');
-    for (const obstacle of this.map.obstacles) {
+    obstacleGridFor(this.map).forEachAlong(start, end, radius, (obstacle) => {
       consider(sweptCircleRectHitTime(start, end, radius, obstacle), 'wall');
-    }
+    });
     for (const player of this.players.values()) {
       if (!player.alive || player.id === ownerId) continue;
       const previous = playerStarts?.get(player.id) ?? player;
@@ -544,7 +545,10 @@ export class Room {
       hostId: this.hostId,
       winnerId: this.winnerId,
       players: [...this.players.values()].map((player) => publicPlayer(player, now)),
-      pickups: this.map?.pickups ?? [],
+      // Loot is static and numerous, so it is sent once with the map and then
+      // maintained from `pickup` events. Repeating thousands of unchanged items
+      // in every snapshot costs more bandwidth than everything else combined.
+      pickupCount: this.map?.pickups.length ?? 0,
       // Velocity travels with each bullet so clients can slide it between
       // updates; at 920 u/s it would otherwise jump a body-length per snapshot.
       bullets: this.bullets.map(({ id, ownerId, clientShotId, x, y, vx, vy, spawnedAt, simulatedAt }) => ({

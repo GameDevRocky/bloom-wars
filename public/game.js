@@ -21,6 +21,8 @@ import { ProjectilePlayback } from './projectile-playback.js';
 import { loadWorldArt, drawWorldFloor, drawWorldObstacle, drawWorldBorder } from './world-renderer.js';
 import { WorldLighting, clippedMuzzle } from './lighting.js';
 import { GameAudio } from './audio.js';
+import { Particles } from './particles.js';
+import { obstacleGridFor } from './shared/obstacle-grid.js';
 
 // Other players are drawn this far in the past, so there is always a pair of
 // received snapshots to slide between instead of a single latest position to
@@ -37,6 +39,7 @@ const context = elements.game.getContext('2d');
 const projectiles = new ProjectilePlayback();
 const lighting = new WorldLighting();
 const audio = new GameAudio();
+const particles = new Particles();
 const state = {
   socket: null,
   connected: false,
@@ -47,6 +50,8 @@ const state = {
   map: null,
   snapshot: null,
   config: null,
+  // Loot by id, seeded from the map and pruned as pickups are collected.
+  pickups: new Map(),
   keys: new Set(),
   firing: false,
   shotSequence: 0,
@@ -146,6 +151,9 @@ function receive(message) {
     state.predicted = null;
     state.correction = { x: 0, y: 0 };
     state.map = message.map;
+    // Loot arrives once with the map and is then maintained locally from
+    // `pickup` events, rather than being resent in full every snapshot.
+    state.pickups = new Map((message.map.pickups ?? []).map((pickup) => [pickup.id, pickup]));
     state.phase = 'playing';
     elements.menu.hidden = true;
     elements.lobby.hidden = true;
@@ -173,6 +181,7 @@ function receive(message) {
     for (const event of message.events ?? []) {
       if (event.type === 'empty_fire' && event.clientShotId) state.predictedEmpty.delete(event.clientShotId);
       if (event.type === 'damage') state.hitFlashes.set(event.playerId, { at: arrival, amount: event.amount });
+      if (event.type === 'pickup' && event.pickupId) state.pickups.delete(event.pickupId);
     }
     for (const [playerId, flash] of state.hitFlashes) {
       if (arrival - flash.at > 1_000) state.hitFlashes.delete(playerId);
@@ -379,15 +388,24 @@ function drawWorld() {
 
   drawWorldFloor(context, state.map, state.camera, state.scale, innerWidth, innerHeight);
   drawStorm();
-  for (const obstacle of state.map.obstacles) {
-    drawWorldObstacle(context, obstacle, state.camera, state.scale, innerWidth, innerHeight);
-  }
-  for (const pickup of state.snapshot.pickups ?? []) drawPickup(pickup);
+  // Only the cover in view, rather than every piece in a world that now holds
+  // tens of thousands of them.
+  obstacleGridFor(state.map).forEachInBox(
+    state.camera.x - innerWidth / (2 * state.scale) - 200,
+    state.camera.y - innerHeight / (2 * state.scale) - 200,
+    state.camera.x + innerWidth / (2 * state.scale) + 200,
+    state.camera.y + innerHeight / (2 * state.scale) + 200,
+    (obstacle) => drawWorldObstacle(context, obstacle, state.camera, state.scale, innerWidth, innerHeight),
+  );
+  for (const pickup of state.pickups.values()) drawPickup(pickup);
   for (const player of state.frameTargets ?? []) if (player.alive) drawPlayer(player);
+  // Before the lighting pass, so motes are dimmed by the dark like everything
+  // else rather than glowing through it.
+  particles.draw(context, state.camera, state.scale, innerWidth, innerHeight);
   drawWorldBorder(context, state.map, state.camera, state.scale, innerWidth, innerHeight);
   lighting.draw(context, {
     map: state.map, camera: state.camera, scale: state.scale, width: innerWidth, height: innerHeight,
-    players: state.frameTargets, pickups: state.snapshot.pickups ?? [], impacts: state.frameImpacts,
+    players: state.frameTargets, pickups: [...state.pickups.values()], impacts: state.frameImpacts,
     focusId: me()?.alive ? state.playerId : me()?.spectatorTargetId,
     rifle: state.config.rifle,
     shotAge: (id) => projectiles.shotAge(id, id === state.playerId ? performance.now() : state.renderTime),
@@ -680,6 +698,11 @@ function frame(now) {
   const projectileFrame = projectiles.frame(renderTime, state.map, state.config?.rifle.bulletRadius, {
     immediateOwnerId: state.playerId,
     immediateTime: now,
+    // So a shot stops on a body instead of sliding through it while the
+    // server's impact event is still in flight.
+    blockers: state.config
+      ? { targets: state.frameTargets, radius: state.config.playerRadius }
+      : null,
   });
   state.frameBullets = projectileFrame.bullets;
   state.frameImpacts = projectileFrame.impacts;
@@ -692,6 +715,7 @@ function frame(now) {
     state.camera.x += (target.x - state.camera.x) * interpolation;
     state.camera.y += (target.y - state.camera.y) * interpolation;
   }
+  particles.update(delta, state.camera, state.scale, innerWidth, innerHeight);
   drawWorld();
   requestAnimationFrame(frame);
 }
