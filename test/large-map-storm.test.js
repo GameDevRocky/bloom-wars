@@ -31,11 +31,17 @@ test('players can outrun the fastest contracting storm edge at every supported m
   }
 });
 
-test('large-map storm progress and phase changes follow the advertised duration', () => {
+test('an extended storm contraction reports progress and phase against its own duration', () => {
   const room = startRoom(CONFIG.maxRoomPlayers);
   const startedAt = room.storm.phaseStartedAt;
+  // A contraction wide enough that outrunning it needs longer than the sixty
+  // second minimum. Set explicitly rather than relying on the largest generated
+  // map, whose size is a gameplay decision and has been reduced before.
+  room.storm.from = { x: 40_000, y: 40_000, radius: 30_000 };
+  room.storm.to = { x: 40_000, y: 40_000, radius: 6_000 };
   const { durationMs } = room.currentStorm();
-  assert.ok(durationMs > CONFIG.storm.contractionMs);
+  assert.ok(durationMs > CONFIG.storm.contractionMs,
+    `expected the wide contraction to be extended past the floor, got ${durationMs}`);
 
   const halfway = room.currentStorm(startedAt + durationMs / 2);
   assert.equal(halfway.progress, 0.5);

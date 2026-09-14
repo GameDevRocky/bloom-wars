@@ -1,4 +1,9 @@
-const WORLD_SCALE = 20;
+// How much wider the arena is than the original single garden. Three is the
+// largest that still squeezes players together on the storm's second cycle:
+// at four the safe zone needs a third contraction, pushing first contact past
+// three minutes. Cover and loot are placed per unit of area, so changing this
+// resizes the world without thinning it out.
+const WORLD_SCALE = 3;
 
 export const CONFIG = Object.freeze({
   tickRate: 30,
