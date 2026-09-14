@@ -441,3 +441,37 @@ test('a room with enough players still restarts, and rehosts if the host left', 
   assert.equal(room.players.size, 2, 'the player who left should be gone');
   assert.ok(room.players.has(room.hostId), 'the room should have rehosted');
 });
+
+// Standing outside has to get worse as a match goes on, or a late stalemate can
+// be waited out on the edge of the zone for the price of the opening cycle.
+test('the storm hurts more with every cycle it closes', () => {
+  const { room } = controlledRoom(['host', 'guest']);
+  room.start('host');
+  const host = room.players.get('host');
+
+  const rateOn = (cycle) => {
+    room.storm.cycle = cycle;
+    return room.stormDamagePerSecond();
+  };
+  assert.equal(rateOn(1), CONFIG.storm.damagePerSecond);
+  assert.equal(rateOn(2), CONFIG.storm.damagePerSecond + CONFIG.storm.damagePerSecondPerCycle);
+  assert.equal(rateOn(5), CONFIG.storm.damagePerSecond + 4 * CONFIG.storm.damagePerSecondPerCycle);
+
+  // And it is the rate actually applied, not just reported.
+  room.storm.cycle = 4;
+  const outside = room.currentStorm();
+  host.x = outside.x + outside.radius + 500;
+  host.y = outside.y;
+  host.hp = CONFIG.maxHp;
+  host.stormDamageCarry = 0;
+  room.applyStormDamage(host, 1, room.now());
+  assert.equal(CONFIG.maxHp - host.hp, room.stormDamagePerSecond(),
+    'one second outside on cycle four should cost the cycle-four rate');
+
+  // Anyone inside the zone is untouched however far the storm has closed.
+  host.hp = CONFIG.maxHp;
+  host.x = outside.x;
+  host.y = outside.y;
+  room.applyStormDamage(host, 1, room.now());
+  assert.equal(host.hp, CONFIG.maxHp);
+});

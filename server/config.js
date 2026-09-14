@@ -67,6 +67,10 @@ export const CONFIG = Object.freeze({
     contractionMs: 60_000,
     holdMs: 10_000,
     damagePerSecond: 1,
+    // Added to the above for every cycle the storm has already closed, so
+    // staying outside late in a match costs far more than it did early on and
+    // a stalemate cannot be waited out on the edge of the zone.
+    damagePerSecondPerCycle: 1,
     radiusScale: 0.58,
     minimumRadius: 105,
     maxBoundarySpeedRatio: 0.65,

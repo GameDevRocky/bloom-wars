@@ -557,9 +557,12 @@ export class Room {
 
   currentStorm(now = this.now()) {
     if (!this.storm) return null;
+    // damagePerSecond travels with the storm so the HUD can warn how much
+    // staying outside costs now; it climbs every cycle.
     if (this.storm.phase === 'holding') return {
       ...this.storm.to, phase: 'holding', cycle: this.storm.cycle,
       progress: 1, durationMs: CONFIG.storm.holdMs,
+      damagePerSecond: this.stormDamagePerSecond(),
     };
     const durationMs = this.stormContractionDuration();
     const progress = clamp((now - this.storm.phaseStartedAt) / durationMs, 0, 1);
@@ -571,6 +574,7 @@ export class Room {
       cycle: this.storm.cycle,
       progress,
       durationMs,
+      damagePerSecond: this.stormDamagePerSecond(),
     };
   }
 
@@ -587,13 +591,20 @@ export class Room {
     }
   }
 
+  // Cycle one is the configured rate; every cycle after it adds one more.
+  stormDamagePerSecond() {
+    const cycle = this.storm?.cycle ?? 1;
+    return CONFIG.storm.damagePerSecond
+      + Math.max(0, cycle - 1) * CONFIG.storm.damagePerSecondPerCycle;
+  }
+
   applyStormDamage(player, deltaSeconds, now) {
     const storm = this.currentStorm(now);
     if (distanceSquared(player, storm) <= storm.radius * storm.radius) {
       player.stormDamageCarry = 0;
       return;
     }
-    player.stormDamageCarry += CONFIG.storm.damagePerSecond * deltaSeconds;
+    player.stormDamageCarry += this.stormDamagePerSecond() * deltaSeconds;
     const wholeDamage = Math.floor(player.stormDamageCarry);
     if (wholeDamage > 0) {
       player.stormDamageCarry -= wholeDamage;

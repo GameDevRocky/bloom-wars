@@ -375,7 +375,12 @@ function updateHud() {
 
   const storm = state.snapshot.storm;
   if (storm) {
-    elements['storm-label'].textContent = `STORM / CYCLE ${storm.cycle}`;
+    // The storm bites harder each cycle, so the rate is shown rather than left
+    // to be discovered by dying to it.
+    const rate = storm.damagePerSecond;
+    elements['storm-label'].textContent = rate
+      ? `STORM / CYCLE ${storm.cycle} · ${rate} HP/S`
+      : `STORM / CYCLE ${storm.cycle}`;
     const duration = storm.durationMs ?? (storm.phase === 'contracting' ? state.config.storm.contractionMs : state.config.storm.holdMs);
     const remaining = storm.phase === 'contracting'
       ? duration * (1 - storm.progress)
