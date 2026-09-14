@@ -256,3 +256,47 @@ h2 { font-size: 34px; }
 .lobby-host { margin: 0 0 12px; font-size: 12px; color: rgba(214, 226, 242, 0.6); }
 .lobby-host strong { color: #cfe3ff; }
 #start:disabled { opacity: 0.4; cursor: not-allowed; border-style: dashed; }
+
+/* Counts the result screen down to the next match, dead centre so it is read
+   without looking for it. Sits behind nothing and blocks nothing: the match is
+   over, but eliminated players are still spectating the field underneath. */
+#countdown {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+  pointer-events: none;
+  text-align: center;
+}
+#countdown-label {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: rgba(233, 240, 250, 0.72);
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.9);
+}
+#countdown-value {
+  font-size: clamp(84px, 16vw, 168px);
+  line-height: 1;
+  font-weight: 900;
+  letter-spacing: -0.04em;
+  color: var(--cream);
+  text-shadow: 0 6px 34px rgba(0, 0, 0, 0.95);
+  /* Tabular figures stop the number jittering sideways as digits change. */
+  font-variant-numeric: tabular-nums;
+}
+/* A pulse on each new second, so the count reads as ticking rather than as a
+   number that happens to change. */
+#countdown-value.tick { animation: countdown-tick 520ms cubic-bezier(0.2, 0.9, 0.3, 1); }
+@keyframes countdown-tick {
+  0% { transform: scale(1.22); color: #ffffff; }
+  100% { transform: scale(1); color: var(--cream); }
+}
+@media (prefers-reduced-motion: reduce) {
+  #countdown-value.tick { animation: none; }
+}

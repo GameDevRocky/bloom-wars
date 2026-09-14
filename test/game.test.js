@@ -479,3 +479,26 @@ test('the storm hurts more with every cycle it closes', () => {
   room.applyStormDamage(host, 1, room.now());
   assert.equal(host.hp, CONFIG.maxHp);
 });
+
+// The result screen counts down to the next match, and it is driven from the
+// snapshot rather than only the match_ended event, so a client that missed that
+// event still shows the same number as everyone else.
+test('snapshots carry the time left before the next match', () => {
+  const { room, advance } = controlledRoom(['host', 'guest']);
+  room.start('host');
+  assert.equal(room.snapshot().restartInMs, null, 'no countdown while a match runs');
+
+  room.damage(room.players.get('guest'), CONFIG.maxHp, 'host', 'rifle');
+  room.tick(0);
+  assert.equal(room.phase, 'ended');
+  assert.equal(room.snapshot().restartInMs, CONFIG.restartDelayMs);
+
+  advance(CONFIG.restartDelayMs * 0.4);
+  const partway = room.snapshot().restartInMs;
+  assert.ok(partway > 0 && partway < CONFIG.restartDelayMs,
+    `expected a falling countdown, got ${partway}`);
+
+  // It bottoms out at zero rather than running negative.
+  advance(CONFIG.restartDelayMs * 2);
+  assert.equal(room.snapshot().restartInMs, 0);
+});

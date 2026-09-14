@@ -666,7 +666,6 @@ export class Room {
       type: 'match_ended',
       winnerId: this.winnerId,
       winningTeam: this.winningTeam,
-      winningTeam: this.winningTeam,
       restartInMs: CONFIG.restartDelayMs,
     });
   }
@@ -720,6 +719,10 @@ export class Room {
       hostId: this.hostId,
       winnerId: this.winnerId,
       winningTeam: this.winningTeam,
+      // Time left on the result screen, in every snapshot rather than only in
+      // the match_ended event, so a client that joined or missed that event
+      // still counts down with everyone else.
+      restartInMs: this.restartAt === null ? null : Math.max(0, this.restartAt - now),
       players: [...this.players.values()].map((player) => publicPlayer(player, now)),
       // Loot is static and numerous, so it is sent once with the map and then
       // maintained from `pickup` events. Repeating thousands of unchanged items

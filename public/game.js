@@ -14,6 +14,7 @@ const elements = Object.fromEntries([
   'storm-time', 'ping', 'health-fill', 'health', 'flower-card', 'flower-icon', 'flower', 'ammo',
   'announcement', 'announcement-kicker', 'announcement-title', 'announcement-copy', 'toast', 'controls',
   'room-list', 'rooms-empty', 'refresh-rooms', 'lobby-host-name',
+  'countdown', 'countdown-label', 'countdown-value',
 ].map((id) => [id, document.getElementById(id)]));
 
 import { EMPTY_INPUT, stepPlayer } from './shared/simulation.js';
@@ -56,6 +57,10 @@ const state = {
   // Last drawn flower stage. Undefined until the first HUD update, so joining
   // mid-match with a grown flower does not play the opening animation.
   flowerStage: undefined,
+  // Local deadline for the next match, derived from the server's remaining time
+  // so the count ticks every frame instead of twice a second with snapshots.
+  restartDeadline: null,
+  countdownShown: null,
   keys: new Set(),
   firing: false,
   shotSequence: 0,
@@ -159,6 +164,9 @@ function receive(message) {
     state.lastLocalShotAt = -Infinity;
     state.predicted = null;
     state.correction = { x: 0, y: 0 };
+    state.restartDeadline = null;
+    state.countdownShown = null;
+    elements.countdown.hidden = true;
     state.map = message.map;
     // Loot arrives once with the map and is then maintained locally from
     // `pickup` events, rather than being resent in full every snapshot.
@@ -207,6 +215,10 @@ function receive(message) {
     const cutoff = performance.now() - 1_000;
     while (state.history.length > 2 && state.history[0].at < cutoff) state.history.shift();
 
+    state.restartDeadline = typeof message.restartInMs === 'number'
+      ? arrival + message.restartInMs
+      : null;
+
     const mine = message.players?.find((player) => player.id === state.playerId);
     if (mine?.alive) {
       if (state.predicted) reconcile(mine);
@@ -243,6 +255,9 @@ function returnToWelcome(reason) {
   state.frameTrails = [];
   state.pickups = new Map();
   state.flowerStage = undefined;
+  state.restartDeadline = null;
+  state.countdownShown = null;
+  elements.countdown.hidden = true;
   state.keys.clear();
   state.firing = false;
   projectiles.clear();
@@ -401,7 +416,7 @@ function updateHud() {
     const title = !winning ? 'Nobody survived'
       : winning === mine ? `${TEAM_NAMES[winning]} team wins` : `${TEAM_NAMES[winning]} team wins`;
     const kicker = winning && winning === mine ? 'VICTORY' : winning ? 'DEFEAT' : 'MATCH COMPLETE';
-    announce(kicker, title, 'The next match starts automatically.');
+    announce(kicker, title, '');
   } else {
     elements.announcement.hidden = true;
   }
@@ -431,6 +446,28 @@ function updateFlowerIcon(heal) {
     icon.classList.add('blooming');
   }
   state.flowerStage = stage;
+}
+
+// Counts the result screen down to the next match. Driven from a local deadline
+// rather than straight from snapshots, so the number falls once a second
+// instead of lurching whenever a packet lands.
+function updateCountdown(now) {
+  if (state.restartDeadline === null || state.phase !== 'ended') {
+    if (!elements.countdown.hidden) {
+      elements.countdown.hidden = true;
+      state.countdownShown = null;
+    }
+    return;
+  }
+  const seconds = Math.max(0, Math.ceil((state.restartDeadline - now) / 1_000));
+  elements.countdown.hidden = false;
+  if (seconds === state.countdownShown) return;
+  state.countdownShown = seconds;
+  elements['countdown-value'].textContent = seconds;
+  elements['countdown-label'].textContent = seconds > 0 ? 'Next match in' : 'Starting';
+  elements['countdown-value'].classList.remove('tick');
+  void elements['countdown-value'].offsetWidth;
+  elements['countdown-value'].classList.add('tick');
 }
 
 function announce(kicker, title, copy) {
@@ -860,6 +897,7 @@ function frame(now) {
     state.camera.x += (target.x - state.camera.x) * interpolation;
     state.camera.y += (target.y - state.camera.y) * interpolation;
   }
+  updateCountdown(now);
   particles.update(delta, state.camera, state.scale, innerWidth, innerHeight);
   drawWorld();
   requestAnimationFrame(frame);
