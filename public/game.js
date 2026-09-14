@@ -405,7 +405,9 @@ function updateHud() {
       : '10s · HOLD';
   }
 
-  if (!player.alive && state.snapshot.phase === 'playing') {
+  if (!watchingMatch()) {
+    elements.announcement.hidden = true;
+  } else if (!player.alive && state.snapshot.phase === 'playing') {
     const target = state.snapshot.players.find((candidate) => candidate.id === player.spectatorTargetId);
     announce('ELIMINATED', 'The garden grows on', target ? `Spectating ${target.name}` : 'Waiting for the next match');
   } else if (state.snapshot.phase === 'ended') {
@@ -448,11 +450,20 @@ function updateFlowerIcon(heal) {
   state.flowerStage = stage;
 }
 
+// True only while the arena is what the player is looking at. The server sends
+// snapshots to everyone in a room that is not in its lobby phase, so somebody
+// sitting on the lobby screen of a room that is mid-result still receives them
+// and their phase turns to 'ended' underneath them. Anything drawn over the
+// match has to check what is actually on screen, not just the match phase.
+function watchingMatch() {
+  return elements.menu.hidden && elements.lobby.hidden;
+}
+
 // Counts the result screen down to the next match. Driven from a local deadline
 // rather than straight from snapshots, so the number falls once a second
 // instead of lurching whenever a packet lands.
 function updateCountdown(now) {
-  if (state.restartDeadline === null || state.phase !== 'ended') {
+  if (state.restartDeadline === null || state.phase !== 'ended' || !watchingMatch()) {
     if (!elements.countdown.hidden) {
       elements.countdown.hidden = true;
       state.countdownShown = null;
