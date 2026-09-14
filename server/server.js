@@ -61,6 +61,8 @@ function handleMessage(socket, raw) {
       broadcastRoom(session.room, started);
     } else if (message.type === 'input') {
       session.room.receiveInput(session.playerId, message);
+    } else if (message.type === 'fire') {
+      session.room.requestFire(session.playerId, message);
     } else if (message.type === 'reload') {
       session.room.requestReload(session.playerId);
     } else if (message.type === 'consume_flower') {

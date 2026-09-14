@@ -34,13 +34,14 @@ test('expanded worlds preserve the populated starting garden and add outer cover
     const inside = (point) => point.x >= region.x && point.x <= region.x + region.width
       && point.y >= region.y && point.y <= region.y + region.height;
     assert.ok(map.spawns.every(inside));
-    assert.ok(map.obstacles.filter(inside).length >= 26 + count * 4);
+    assert.ok(map.obstacles.filter(inside).length >= 40 + count * 6);
     assert.ok(map.obstacles.some((obstacle) => !inside(obstacle)));
     for (const kind of ['rifle', 'ammo', 'seed']) {
       assert.ok(map.pickups.filter((pickup) => pickup.kind === kind && inside(pickup)).length >= count,
         `${kind} must remain available in the starting garden`);
       assert.ok(map.pickups.some((pickup) => pickup.kind === kind && !inside(pickup)));
     }
+    assert.ok(map.pickups.filter((pickup) => pickup.kind === 'ammo' && inside(pickup)).length >= Math.max(count * 4, 16));
     assert.deepEqual(validateMap(map), { valid: true, issues: [] });
   }
 });

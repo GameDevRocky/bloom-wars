@@ -198,3 +198,38 @@ test('late joiners spectate a living player until the next match', () => {
   assert.equal(late.alive, false);
   assert.ok(['host', 'guest'].includes(late.spectatorTargetId));
 });
+
+test('empty rifles reload automatically and ammo pickup starts an empty weapon reload', () => {
+  const { room, now, advance } = controlledRoom(['host']);
+  room.start('host');
+  const host = room.players.get('host');
+  Object.assign(host, { hasRifle: true, magazine: 1, reserveAmmo: 30 });
+
+  assert.equal(room.requestFire('host', { shotId: 'last-round', aim: 0 }), 'fired');
+  assert.equal(host.magazine, 0);
+  assert.equal(host.reloadEndsAt, now() + CONFIG.rifle.reloadMs);
+  assert.ok(room.events.some((event) => event.type === 'reload_started' && event.reason === 'empty_magazine'));
+  advance(CONFIG.rifle.reloadMs);
+  room.finishReload(host, now());
+  assert.equal(host.magazine, CONFIG.rifle.magazineSize);
+  assert.equal(host.reserveAmmo, 0);
+
+  host.magazine = 0;
+  room.map.pickups = [{ id: 'ammo', kind: 'ammo', x: host.x, y: host.y, radius: 15 }];
+  room.collectPickups(host, now());
+  assert.equal(host.reserveAmmo, CONFIG.rifle.magazineSize);
+  assert.ok(host.reloadEndsAt > now());
+  assert.ok(room.events.some((event) => event.type === 'reload_started' && event.reason === 'ammo_pickup'));
+});
+
+test('firing an empty rifle emits feedback and starts reload when reserve ammo exists', () => {
+  const { room, now } = controlledRoom(['host']);
+  room.start('host');
+  const host = room.players.get('host');
+  Object.assign(host, { hasRifle: true, magazine: 0, reserveAmmo: 30 });
+  assert.equal(room.requestFire('host', { shotId: 'dry-1', aim: 1 }), 'empty');
+  assert.equal(room.bullets.length, 0);
+  assert.deepEqual(room.events.slice(-2).map((event) => event.type), ['empty_fire', 'reload_started']);
+  assert.equal(room.events.at(-2).clientShotId, 'dry-1');
+  assert.equal(host.reloadEndsAt, now() + CONFIG.rifle.reloadMs);
+});

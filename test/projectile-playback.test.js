@@ -265,3 +265,36 @@ test('diagonal trails share the projectile endpoint at the arena boundary', () =
   near(frame.trails[0].x2, onlyBullet(frame).x);
   near(frame.trails[0].y2, onlyBullet(frame).y);
 });
+
+test('a local prediction renders at the current frame and reconciles to one authoritative track', () => {
+  const playback = new ProjectilePlayback();
+  playback.predictShot({
+    clientShotId: 'client-1', ownerId: 'me', x: 10, y: 50,
+    vx: 1_000, vy: 0, at: 2_000,
+  });
+
+  const immediate = playback.frame(1_890, openMap, 2, { immediateOwnerId: 'me', immediateTime: 2_020 });
+  assert.equal(immediate.bullets.length, 1);
+  near(immediate.bullets[0].x, 30);
+
+  receive(playback, 1_010, 2_040, [liveBullet({
+    id: 'server-bullet', ownerId: 'me', clientShotId: 'client-1', x: 20,
+    spawnedAt: 1_000, updatedAt: 1_010,
+  })], [shot({ bulletId: 'server-bullet', ownerId: 'me', clientShotId: 'client-1' })]);
+
+  assert.equal(playback.tracks.size, 1);
+  assert.equal(playback.tracks.has('predicted:client-1'), false);
+  assert.equal(playback.tracks.has('server-bullet'), true);
+  const reconciled = playback.frame(1_930, openMap, 2, { immediateOwnerId: 'me', immediateTime: 2_050 });
+  assert.equal(reconciled.bullets.length, 1);
+  assert.equal(reconciled.bullets[0].id, 'server-bullet');
+});
+
+test('a rejected local prediction can be removed without affecting other shots', () => {
+  const playback = new ProjectilePlayback();
+  playback.predictShot({ clientShotId: 'rejected', ownerId: 'me', x: 10, y: 50, vx: 1_000, vy: 0, at: 2_000 });
+  playback.predictShot({ clientShotId: 'kept', ownerId: 'me', x: 10, y: 60, vx: 1_000, vy: 0, at: 2_000 });
+  playback.rejectPrediction('rejected');
+  assert.equal(playback.tracks.has('predicted:rejected'), false);
+  assert.equal(playback.tracks.has('predicted:kept'), true);
+});

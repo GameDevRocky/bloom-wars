@@ -41,19 +41,46 @@ export class ProjectilePlayback {
 
   clear() { this.tracks.clear(); }
 
+  predictShot({ clientShotId, ownerId, x, y, vx, vy, at }) {
+    const id = `predicted:${clientShotId}`;
+    this.tracks.set(id, {
+      id, clientShotId, ownerId, predicted: true, localImmediate: true,
+      bornAt: at, samples: [{ x, y, vx, vy, at }],
+    });
+    return id;
+  }
+
+  rejectPrediction(clientShotId) {
+    this.tracks.delete(`predicted:${clientShotId}`);
+  }
+
   receive(snapshot, arrival) {
     const localTime = (serverTime) => arrival + serverTime - snapshot.serverTime;
     for (const event of snapshot.events ?? []) {
       if (event.type !== 'shot' && event.type !== 'bullet_impact') continue;
       const id = event.bulletId;
       let track = this.tracks.get(id);
+      if (!track && event.type === 'shot' && event.clientShotId) {
+        const predictedId = `predicted:${event.clientShotId}`;
+        track = this.tracks.get(predictedId);
+        if (track) {
+          this.tracks.delete(predictedId);
+          track.id = id;
+          track.predicted = false;
+          this.tracks.set(id, track);
+        }
+      }
       if (!track) {
         track = { id, ownerId: event.ownerId, samples: [], bornAt: Infinity };
         this.tracks.set(id, track);
       }
       if (event.type === 'shot') {
-        track.bornAt = localTime(event.spawnedAt);
-        track.samples.push({ ...event, at: track.bornAt });
+        const authoritativeBornAt = localTime(event.spawnedAt);
+        track.bornAt = Math.min(track.bornAt, authoritativeBornAt);
+        // A confirmed prediction keeps its immediate local birth time while
+        // adopting the server's muzzle and spread from that same visual time.
+        if (track.localImmediate) track.samples = [{ ...event, at: track.bornAt }];
+        else track.samples.push({ ...event, at: authoritativeBornAt });
       } else {
         track.impact = { ...event, at: localTime(event.impactedAt) };
         track.samples.push(track.impact);
@@ -80,24 +107,28 @@ export class ProjectilePlayback {
       // Retain enough history for delayed playback without retaining an entire
       // cross-map flight in memory.
       while (track.samples.length > 2 && track.samples[1].at < arrival - 1_000) track.samples.shift();
-      if (!live.has(id) && !track.impact) track.missingAt ??= arrival;
+      if (!live.has(id) && !track.impact) {
+        // Give an unconfirmed local shot enough time for a slow round trip.
+        if (!track.predicted || arrival - track.bornAt > 600) track.missingAt ??= arrival;
+      }
       const endedAt = track.impact?.at ?? track.missingAt;
       if (endedAt != null && arrival - endedAt > 1_000) this.tracks.delete(id);
     }
   }
 
-  frame(time, map, radius = 2) {
+  frame(time, map, radius = 2, { immediateOwnerId = null, immediateTime = time } = {}) {
     const bullets = [];
     const impacts = [];
     const trails = [];
     for (const track of this.tracks.values()) {
-      const impactAge = time - (track.impact?.at ?? Infinity);
+      const trackTime = track.localImmediate && track.ownerId === immediateOwnerId ? immediateTime : time;
+      const impactAge = trackTime - (track.impact?.at ?? Infinity);
       if (impactAge >= 0 && impactAge < 180) impacts.push({ ...track.impact, age: impactAge });
-      if (time < track.bornAt || impactAge >= TRAIL_FADE_MS) continue;
-      if (!track.impact && track.missingAt != null && time > track.missingAt + 250) continue;
+      if (trackTime < track.bornAt || impactAge >= TRAIL_FADE_MS) continue;
+      if (!track.impact && track.missingAt != null && trackTime > track.missingAt + 250) continue;
       // Freeze the final segment at contact, then fade it without moving its
       // tail. This also preserves shots that start and end between snapshots.
-      const flightTime = impactAge >= 0 ? track.impact.at : time;
+      const flightTime = impactAge >= 0 ? track.impact.at : trackTime;
       const head = positionAt(track, flightTime, map, radius);
       if (!head) continue;
       const tailTime = Math.max(track.bornAt, track.samples[0].at, flightTime - TRAIL_FLIGHT_MS);

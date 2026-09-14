@@ -93,15 +93,15 @@ export function generateMap(playerCount, seed = `${Date.now()}`) {
   const obstacleTarget = CONFIG.map.obstacleBase + count * CONFIG.map.obstaclesPerPlayer;
   const localObstacles = placeObstacles(startingSize, obstacleTarget, random, localSpawns);
   let localPickups = placePickups(startingSize, random, localObstacles, localSpawns, 'rifle', Math.max(count, 4), 0);
-  localPickups = localPickups.concat(placePickups(startingSize, random, localObstacles, [...localSpawns, ...localPickups], 'ammo', Math.max(count * 2, 8), localPickups.length));
+  localPickups = localPickups.concat(placePickups(startingSize, random, localObstacles, [...localSpawns, ...localPickups], 'ammo', Math.max(count * 4, 16), localPickups.length));
   localPickups = localPickups.concat(placePickups(startingSize, random, localObstacles, [...localSpawns, ...localPickups], 'seed', Math.max(count, 6), localPickups.length));
   const spawns = localSpawns.map(translate);
   const startingRegion = { x: offset, y: offset, width: startingSize, height: startingSize };
   // Additional outer cover stays bounded by population rather than exploding
   // with the world's 400-fold area. The protected central garden stays intact.
-  const obstacles = placeObstacles(size, obstacleTarget * 4, random, spawns, localObstacles.map(translate), startingRegion);
+  const obstacles = placeObstacles(size, obstacleTarget * 6, random, spawns, localObstacles.map(translate), startingRegion);
   let pickups = localPickups.map(translate);
-  for (const [kind, target] of [['rifle', Math.max(count, 4)], ['ammo', Math.max(count * 2, 8)], ['seed', Math.max(count, 6)]]) {
+  for (const [kind, target] of [['rifle', Math.max(count, 4)], ['ammo', Math.max(count * 4, 16)], ['seed', Math.max(count, 6)]]) {
     pickups = pickups.concat(placePickups(size, random, obstacles, [...spawns, ...pickups], kind, target, pickups.length));
   }
   return {

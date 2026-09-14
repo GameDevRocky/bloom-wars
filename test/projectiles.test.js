@@ -141,15 +141,16 @@ test('muzzle position rotates with the assembled weapon and spread changes only 
 test('newly created shots have no travel before their spawn timestamp', () => {
   const state = arena();
   const host = state.room.players.get('host');
-  state.room.receiveInput(host.id, { sequence: 1, firing: true, aim: 0 });
-  state.tick(1 / CONFIG.tickRate);
+  state.room.requestFire(host.id, { shotId: 'client-1', aim: 0 });
   const bullet = state.room.bullets[0];
   const shot = state.room.events.find((event) => event.type === 'shot');
   near(bullet.x, shot.x);
   near(bullet.y, shot.y);
   assert.equal(bullet.spawnedAt, state.now());
+  assert.equal(shot.clientShotId, 'client-1');
+  state.tick(1 / CONFIG.tickRate);
   state.advance(0.1);
-  near(bullet.x, shot.x + bullet.vx * 0.1);
+  near(bullet.x, shot.x + bullet.vx * (0.1 + 1 / CONFIG.tickRate));
 });
 
 test('shots that hit between snapshots still publish their complete visual lifecycle', () => {

@@ -215,9 +215,27 @@ export class Room {
   requestReload(playerId) {
     const player = this.players.get(playerId);
     const now = this.now();
-    if (!player?.alive || !player.hasRifle || player.reloadEndsAt > now) return;
-    if (player.magazine >= CONFIG.rifle.magazineSize || player.reserveAmmo <= 0) return;
+    return this.startReload(player, now, 'manual');
+  }
+
+  startReload(player, now, reason = 'automatic') {
+    if (!player?.alive || !player.hasRifle || player.reloadEndsAt > now) return false;
+    if (player.magazine >= CONFIG.rifle.magazineSize || player.reserveAmmo <= 0) return false;
     player.reloadEndsAt = now + CONFIG.rifle.reloadMs;
+    this.events.push({ type: 'reload_started', playerId: player.id, reason });
+    return true;
+  }
+
+  requestFire(playerId, raw = {}) {
+    const player = this.players.get(playerId);
+    if (!player?.alive || this.phase !== 'playing') return 'unavailable';
+    const requestedAim = Number(raw.aim);
+    const aim = Number.isFinite(requestedAim)
+      ? Math.atan2(Math.sin(requestedAim), Math.cos(requestedAim))
+      : player.input.aim;
+    player.input = { ...player.input, aim };
+    const clientShotId = typeof raw.shotId === 'string' ? raw.shotId.slice(0, 80) : null;
+    return this.fire(player, this.now(), { aim, clientShotId });
   }
 
   consumeFlower(playerId) {
@@ -279,6 +297,7 @@ export class Room {
         player.magazine = CONFIG.rifle.magazineSize;
       } else if (pickup.kind === 'ammo' && player.hasRifle) {
         player.reserveAmmo += CONFIG.rifle.magazineSize;
+        if (player.magazine === 0) this.startReload(player, now, 'ammo_pickup');
       } else if (pickup.kind === 'seed' && player.flowerCollectedAt === null) {
         player.flowerCollectedAt = now;
       } else {
@@ -299,12 +318,17 @@ export class Room {
     player.reloadEndsAt = 0;
   }
 
-  fire(player, now) {
-    if (!player.hasRifle || player.magazine <= 0 || player.reloadEndsAt > now) return;
-    if (now - player.lastShotAt < CONFIG.rifle.fireIntervalMs) return;
+  fire(player, now, { aim = player.input.aim, clientShotId = null } = {}) {
+    if (!player.hasRifle) return 'unarmed';
+    if (player.reloadEndsAt > now) return 'reloading';
+    if (player.magazine <= 0) {
+      this.events.push({ type: 'empty_fire', playerId: player.id, clientShotId });
+      this.startReload(player, now, 'empty');
+      return 'empty';
+    }
+    if (now - player.lastShotAt < CONFIG.rifle.fireIntervalMs) return 'cooldown';
     player.lastShotAt = now;
     player.magazine -= 1;
-    const aim = player.input.aim;
     const direction = aim + randomBetween(this.random, -CONFIG.rifle.spreadRadians, CONFIG.rifle.spreadRadians);
     const forward = CONFIG.rifle.muzzleForward;
     const side = CONFIG.rifle.muzzleSide;
@@ -317,6 +341,7 @@ export class Room {
       vy: Math.sin(direction) * CONFIG.rifle.bulletSpeed,
       spawnedAt: now,
       simulatedAt: now,
+      clientShotId,
     };
     // The barrel can protrude through cover while the body is against it.
     // Trace from the body to the muzzle so those shots hit that cover first.
@@ -327,10 +352,12 @@ export class Room {
     }
     this.events.push({
       type: 'shot', bulletId: bullet.id, playerId: player.id, ownerId: player.id,
-      x: bullet.x, y: bullet.y, vx: bullet.vx, vy: bullet.vy, spawnedAt: now,
+      clientShotId, x: bullet.x, y: bullet.y, vx: bullet.vx, vy: bullet.vy, spawnedAt: now,
     });
     if (obstruction) this.impactBullet(bullet, obstruction, now);
     else this.bullets.push(bullet);
+    if (player.magazine === 0) this.startReload(player, now, 'empty_magazine');
+    return 'fired';
   }
 
   firstBulletHit(start, end, ownerId, playerStarts = null, startFraction = 0) {
@@ -520,8 +547,8 @@ export class Room {
       pickups: this.map?.pickups ?? [],
       // Velocity travels with each bullet so clients can slide it between
       // updates; at 920 u/s it would otherwise jump a body-length per snapshot.
-      bullets: this.bullets.map(({ id, ownerId, x, y, vx, vy, spawnedAt, simulatedAt }) => ({
-        id, ownerId, spawnedAt, updatedAt: simulatedAt,
+      bullets: this.bullets.map(({ id, ownerId, clientShotId, x, y, vx, vy, spawnedAt, simulatedAt }) => ({
+        id, ownerId, clientShotId, spawnedAt, updatedAt: simulatedAt,
         x: Math.round(x * 10) / 10, y: Math.round(y * 10) / 10, vx, vy,
       })),
       storm: this.currentStorm(now),

@@ -20,6 +20,7 @@ import { drawCharacter as drawSpriteCharacter } from './character-renderer.js';
 import { ProjectilePlayback } from './projectile-playback.js';
 import { loadWorldArt, drawWorldFloor, drawWorldObstacle, drawWorldBorder } from './world-renderer.js';
 import { WorldLighting, clippedMuzzle } from './lighting.js';
+import { GameAudio } from './audio.js';
 
 // Other players are drawn this far in the past, so there is always a pair of
 // received snapshots to slide between instead of a single latest position to
@@ -35,6 +36,7 @@ const RECONCILE_SMOOTH_LIMIT = 90;
 const context = elements.game.getContext('2d');
 const projectiles = new ProjectilePlayback();
 const lighting = new WorldLighting();
+const audio = new GameAudio();
 const state = {
   socket: null,
   connected: false,
@@ -47,6 +49,11 @@ const state = {
   config: null,
   keys: new Set(),
   firing: false,
+  shotSequence: 0,
+  lastLocalShotAt: -Infinity,
+  lastEmptyAt: -Infinity,
+  predictedShots: new Map(),
+  predictedEmpty: new Set(),
   aim: 0,
   inputSequence: 0,
   // Local simulation of our own player, run ahead of the server.
@@ -131,6 +138,9 @@ function receive(message) {
     projectiles.clear();
     state.history = [];
     state.pending = [];
+    state.predictedShots.clear();
+    state.predictedEmpty.clear();
+    state.lastLocalShotAt = -Infinity;
     state.predicted = null;
     state.correction = { x: 0, y: 0 };
     state.map = message.map;
@@ -150,7 +160,17 @@ function receive(message) {
     state.snapshot = message;
     state.phase = message.phase;
     const arrival = performance.now();
+    const locallyPredicted = new Set((message.events ?? [])
+      .filter((event) => event.type === 'shot' && event.clientShotId && state.predictedShots.has(event.clientShotId))
+      .map((event) => event.clientShotId));
+    const locallyEmpty = new Set((message.events ?? [])
+      .filter((event) => event.type === 'empty_fire' && event.clientShotId && state.predictedEmpty.has(event.clientShotId))
+      .map((event) => event.clientShotId));
     projectiles.receive(message, arrival);
+    for (const clientShotId of locallyPredicted) state.predictedShots.delete(clientShotId);
+    for (const event of message.events ?? []) {
+      if (event.type === 'empty_fire' && event.clientShotId) state.predictedEmpty.delete(event.clientShotId);
+    }
 
     // Timestamped on arrival: interpolation runs on the local clock, so it
     // needs no clock synchronisation with the server.
@@ -170,6 +190,7 @@ function receive(message) {
       state.predicted = null;
       state.pending = [];
     }
+    handleAudioEvents(message.events ?? [], locallyPredicted, locallyEmpty);
     updateHud();
   } else if (message.type === 'pong') {
     elements.ping.textContent = `${Date.now() - message.sentAt} ms`;
@@ -205,6 +226,22 @@ function updateLobby(message) {
 
 function me() {
   return state.snapshot?.players?.find((player) => player.id === state.playerId);
+}
+
+function handleAudioEvents(events, locallyPredicted, locallyEmpty) {
+  const listener = localPlayer() ?? me();
+  for (const event of events) {
+    if (event.type === 'shot' && !locallyPredicted.has(event.clientShotId)) {
+      audio.play('shot', event, listener);
+    } else if (event.type === 'pickup' && event.playerId === state.playerId) {
+      audio.play(event.kind === 'rifle' ? 'item' : 'money');
+    } else if (event.type === 'empty_fire' && event.playerId === state.playerId
+      && !locallyEmpty.has(event.clientShotId)) {
+      audio.play('empty');
+    } else if (event.type === 'reload_started' && event.playerId === state.playerId) {
+      audio.play('reload');
+    }
+  }
 }
 
 function cameraTarget() {
@@ -346,7 +383,8 @@ function drawWorld() {
     map: state.map, camera: state.camera, scale: state.scale, width: innerWidth, height: innerHeight,
     players: state.frameTargets, pickups: state.snapshot.pickups ?? [], impacts: state.frameImpacts,
     focusId: me()?.alive ? state.playerId : me()?.spectatorTargetId,
-    rifle: state.config.rifle, shotAge: (id) => projectiles.shotAge(id, state.renderTime),
+    rifle: state.config.rifle,
+    shotAge: (id) => projectiles.shotAge(id, id === state.playerId ? performance.now() : state.renderTime),
   });
   for (const trail of state.frameTrails) drawBulletTrail(trail);
   for (const bullet of state.frameBullets) drawBullet(bullet);
@@ -495,7 +533,7 @@ function drawPlayer(player) {
   context.beginPath();
   context.ellipse(0, 3 * state.scale, radius * 1.04, radius * 0.88, player.aim, 0, Math.PI * 2);
   context.fill();
-  const shotAge = projectiles.shotAge(player.id, state.renderTime);
+  const shotAge = projectiles.shotAge(player.id, player.id === state.playerId ? performance.now() : state.renderTime);
   if (art.ready) drawSpriteCharacter(context, player, radius, art, {
     recoil: Math.max(0, 1 - shotAge / 110),
     stride: Math.sin(state.lastFrame / 85) * Math.min(1, Math.hypot(player.vx ?? 0, player.vy ?? 0) / 225),
@@ -600,10 +638,14 @@ function frame(now) {
   state.correction.x *= settle;
   state.correction.y *= settle;
 
-  const renderTime = performance.now() - INTERPOLATION_DELAY_MS;
+  attemptFire(now);
+  const renderTime = now - INTERPOLATION_DELAY_MS;
   state.renderTime = renderTime;
   state.frameTargets = renderedPlayers(renderTime);
-  const projectileFrame = projectiles.frame(renderTime, state.map, state.config?.rifle.bulletRadius);
+  const projectileFrame = projectiles.frame(renderTime, state.map, state.config?.rifle.bulletRadius, {
+    immediateOwnerId: state.playerId,
+    immediateTime: now,
+  });
   state.frameBullets = projectileFrame.bullets;
   state.frameImpacts = projectileFrame.impacts;
   state.frameTrails = projectileFrame.trails;
@@ -632,7 +674,9 @@ function sendInput() {
     down: state.keys.has('KeyS'),
     left: state.keys.has('KeyA'),
     right: state.keys.has('KeyD'),
-    firing: state.firing,
+    // Firing has its own immediate message and prediction path. Keeping this
+    // false prevents the movement stream from creating a second server shot.
+    firing: false,
     aim: state.aim,
   };
   send({ type: 'input', ...input });
@@ -642,6 +686,44 @@ function sendInput() {
   // replay of the same inputs lands in the same place.
   stepPlayer(state.predicted, input, state.config, state.map, 1 / state.config.tickRate);
   state.pending.push(input);
+}
+
+function attemptFire(now = performance.now()) {
+  if (!state.firing || state.phase !== 'playing' || !state.map || !state.config) return;
+  if (now - state.lastLocalShotAt < state.config.rifle.fireIntervalMs) return;
+  const player = localPlayer();
+  if (!player?.alive || !player.hasRifle || player.reloading) return;
+  const available = player.magazine - state.predictedShots.size;
+  const clientShotId = `${state.playerId}:${++state.shotSequence}`;
+  state.lastLocalShotAt = now;
+
+  if (available <= 0) {
+    if (now - state.lastEmptyAt < 400) return;
+    state.lastEmptyAt = now;
+    state.predictedEmpty.add(clientShotId);
+    send({ type: 'fire', shotId: clientShotId, aim: state.aim });
+    audio.play('empty');
+    setTimeout(() => state.predictedEmpty.delete(clientShotId), 1_000);
+    return;
+  }
+
+  const muzzle = clippedMuzzle({ ...player, aim: state.aim }, state.config.rifle, state.map);
+  projectiles.predictShot({
+    clientShotId,
+    ownerId: state.playerId,
+    x: muzzle.x,
+    y: muzzle.y,
+    vx: Math.cos(state.aim) * state.config.rifle.bulletSpeed,
+    vy: Math.sin(state.aim) * state.config.rifle.bulletSpeed,
+    at: now,
+  });
+  state.predictedShots.set(clientShotId, now);
+  send({ type: 'fire', shotId: clientShotId, aim: state.aim });
+  audio.play('shot');
+  setTimeout(() => {
+    if (!state.predictedShots.delete(clientShotId)) return;
+    projectiles.rejectPrediction(clientShotId);
+  }, 1_000);
 }
 
 // Re-runs everything the server has not confirmed yet, starting from the
@@ -755,8 +837,8 @@ function renderedPlayers(renderTime) {
   return players.map((player) => (player.id === state.playerId ? local : player));
 }
 
-elements.create.addEventListener('click', () => send({ type: 'create_room', name: elements.name.value }));
-elements.join.addEventListener('click', () => send({ type: 'join_room', name: elements.name.value, roomCode: elements['room-code'].value }));
+elements.create.addEventListener('click', () => { audio.unlock(); send({ type: 'create_room', name: elements.name.value }); });
+elements.join.addEventListener('click', () => { audio.unlock(); send({ type: 'join_room', name: elements.name.value, roomCode: elements['room-code'].value }); });
 elements['room-code'].addEventListener('input', (event) => { event.target.value = event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''); });
 elements['room-code'].addEventListener('keydown', (event) => { if (event.key === 'Enter') elements.join.click(); });
 elements.start.addEventListener('click', () => send({ type: 'start_match' }));
@@ -766,6 +848,7 @@ elements['copy-code'].addEventListener('click', async () => {
 });
 
 window.addEventListener('keydown', (event) => {
+  audio.unlock();
   if (['KeyW', 'KeyA', 'KeyS', 'KeyD'].includes(event.code)) {
     state.keys.add(event.code);
     event.preventDefault();
@@ -780,7 +863,13 @@ elements.game.addEventListener('mousemove', (event) => {
   state.mouse.y = event.clientY;
   state.aim = Math.atan2(event.clientY - innerHeight / 2, event.clientX - innerWidth / 2);
 });
-elements.game.addEventListener('mousedown', (event) => { if (event.button === 0) state.firing = true; });
+elements.game.addEventListener('mousedown', (event) => {
+  audio.unlock();
+  if (event.button === 0) {
+    state.firing = true;
+    attemptFire(performance.now());
+  }
+});
 window.addEventListener('mouseup', (event) => { if (event.button === 0) state.firing = false; });
 window.addEventListener('contextmenu', (event) => event.preventDefault());
 window.addEventListener('resize', resize);
