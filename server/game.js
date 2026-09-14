@@ -665,17 +665,26 @@ export class Room {
   restartIfDue(now) {
     if (this.phase !== 'ended' || this.restartAt === null || now < this.restartAt) return null;
     this.restartAt = null;
-    const roster = [...this.players.values()].filter((player) => player.connected);
+    // Players who dropped out mid-match stay on the roster so the scoreboard and
+    // the spectator chain keep working until the result is shown. They are gone
+    // now, and leaving them would make the next lobby count people who are not
+    // there: enough to enable the start button, never enough to actually start.
+    for (const [id, player] of this.players) {
+      if (!player.connected) this.players.delete(id);
+    }
+
+    const roster = [...this.players.values()];
     if (roster.length < CONFIG.minRoomPlayers) {
-      // Not enough players to run another match; fall back to the lobby so the
-      // room is still usable when someone else arrives.
-      this.phase = 'lobby';
+      // A room that cannot field two sides has nothing to offer whoever is
+      // left, so it closes and they are returned to the welcome screen rather
+      // than held in a lobby whose start button can never succeed.
+      this.phase = 'closed';
       this.winnerId = null;
       this.winningTeam = null;
-      return { type: 'lobby_returned', ...this.lobbyState() };
+      return { type: 'room_closed', reason: 'Not enough players for another match.' };
     }
     // The host may have left during the result screen.
-    if (!this.players.get(this.hostId)?.connected) this.hostId = roster[0].id;
+    if (!this.players.has(this.hostId)) this.hostId = roster[0].id;
     return this.start(this.hostId);
   }
 

@@ -108,9 +108,18 @@ setInterval(() => {
   manager.tick(delta);
   // A finished room starts its next match on its own once the result has been
   // shown, so play continues without waiting on the host to click anything.
-  for (const room of manager.rooms.values()) {
-    const restarted = room.restartIfDue(Date.now());
-    if (restarted) broadcastRoom(room, restarted);
+  for (const [code, room] of manager.rooms) {
+    const outcome = room.restartIfDue(Date.now());
+    if (!outcome) continue;
+    broadcastRoom(room, outcome);
+    if (outcome.type === 'room_closed') {
+      // Release everyone still pointed at it, or they would keep sending into a
+      // room that no longer exists and could never create or join another.
+      for (const session of sockets.values()) {
+        if (session.room === room) session.room = null;
+      }
+      manager.rooms.delete(code);
+    }
   }
 }, 1_000 / CONFIG.tickRate);
 

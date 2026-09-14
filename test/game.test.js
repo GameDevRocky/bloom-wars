@@ -401,3 +401,43 @@ test('nobody starts a match outside the storm', () => {
     }
   }
 });
+
+// A room that cannot field two sides used to drop back to a lobby that still
+// listed the players who had left. It showed enough players to enable the start
+// button and never enough to actually start, which left whoever remained stuck
+// in a room they could not play or leave.
+test('a room with too few players left closes instead of stranding them', () => {
+  const { room, advance, now } = controlledRoom(['host', 'guest']);
+  room.start('host');
+  room.damage(room.players.get('guest'), CONFIG.maxHp, 'host', 'rifle');
+  room.tick(0);
+  assert.equal(room.phase, 'ended');
+
+  room.removePlayer('guest');
+  advance(CONFIG.restartDelayMs);
+  const outcome = room.restartIfDue(now());
+
+  assert.equal(outcome?.type, 'room_closed');
+  assert.equal(room.phase, 'closed');
+  // Whoever left is off the roster, so nothing counts players who are not there.
+  assert.equal(room.players.size, 1);
+  assert.ok(room.players.has('host'));
+});
+
+test('a room with enough players still restarts, and rehosts if the host left', () => {
+  const { room, advance, now } = controlledRoom(['host', 'guest', 'third']);
+  room.start('host');
+  for (const player of room.players.values()) player.team = player.id === 'host' ? 'red' : 'blue';
+  room.damage(room.players.get('host'), CONFIG.maxHp, 'guest', 'rifle');
+  room.tick(0);
+  assert.equal(room.phase, 'ended');
+
+  room.removePlayer('host');
+  advance(CONFIG.restartDelayMs);
+  const outcome = room.restartIfDue(now());
+
+  assert.equal(outcome?.type, 'match_started');
+  assert.equal(room.phase, 'playing');
+  assert.equal(room.players.size, 2, 'the player who left should be gone');
+  assert.ok(room.players.has(room.hostId), 'the room should have rehosted');
+});

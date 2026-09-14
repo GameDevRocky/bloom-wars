@@ -142,18 +142,12 @@ function receive(message) {
     state.roomCode = message.roomCode;
     state.isHost = message.isHost;
     showLobby();
+  } else if (message.type === 'room_closed') {
+    returnToWelcome(message.reason ?? 'The room closed.');
   } else if (message.type === 'room_list') {
     renderRoomList(message.rooms ?? []);
-  } else if (message.type === 'lobby' || message.type === 'lobby_returned') {
+  } else if (message.type === 'lobby') {
     state.isHost = message.hostId === state.playerId;
-    if (message.type === 'lobby_returned') {
-      state.phase = 'lobby';
-      elements.hud.hidden = true;
-      elements.controls.hidden = true;
-      elements.announcement.hidden = true;
-      elements.lobby.hidden = false;
-      elements.game.style.cursor = '';
-    }
     updateLobby(message);
   } else if (message.type === 'match_started') {
     projectiles.clear();
@@ -230,6 +224,39 @@ function receive(message) {
   }
 }
 
+// Tears down a finished match and puts the player back on the welcome screen.
+// Reached when a room closes under them, so every trace of the old match has to
+// go or the next one inherits its map, loot and half-applied prediction state.
+function returnToWelcome(reason) {
+  state.phase = 'menu';
+  state.roomCode = null;
+  state.isHost = false;
+  state.map = null;
+  state.snapshot = null;
+  state.predicted = null;
+  state.pending = [];
+  state.correction = { x: 0, y: 0 };
+  state.history = [];
+  state.frameTargets = [];
+  state.frameBullets = [];
+  state.frameImpacts = [];
+  state.frameTrails = [];
+  state.pickups = new Map();
+  state.flowerStage = undefined;
+  state.keys.clear();
+  state.firing = false;
+  projectiles.clear();
+
+  elements.hud.hidden = true;
+  elements.controls.hidden = true;
+  elements.announcement.hidden = true;
+  elements.lobby.hidden = true;
+  elements.menu.hidden = false;
+  elements.game.style.cursor = '';
+  if (reason) toast(reason);
+  requestRooms();
+}
+
 function showLobby() {
   state.phase = 'lobby';
   elements.menu.hidden = true;
@@ -254,7 +281,7 @@ function updateLobby(message) {
   }));
   // A match needs two sides, so the host cannot start alone.
   const minimum = message.minPlayers ?? 2;
-  const ready = message.players.length >= minimum;
+  const ready = message.players.filter((player) => player.connected !== false).length >= minimum;
   elements.start.hidden = !state.isHost;
   elements.start.disabled = !ready;
   elements.start.textContent = ready ? 'Start match' : `Waiting for ${minimum} players`;
