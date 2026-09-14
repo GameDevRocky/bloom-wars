@@ -37,11 +37,24 @@ const EXTRAPOLATION_LIMIT_MS = 250;
 // too far out of place to fix gently and is snapped.
 const RECONCILE_SMOOTH_LIMIT = 90;
 
+// Recoil kick, in world units, applied to the view every time this player fires.
+// Purely local: it is never sent, never simulated, and moves nobody's position.
+const SHAKE_RECOIL = 4.5;
+// A little scatter across the barrel so repeated shots do not kick identically.
+const SHAKE_JITTER = 2.2;
+// How fast the view returns to centre, per second. Fast enough that a single
+// shot has settled before the next, so sustained fire reaches a steady tremble
+// instead of walking the camera off the player.
+const SHAKE_DECAY = 12;
+// Ceiling on the accumulated kick, so holding the trigger cannot swing the view.
+const SHAKE_LIMIT = 9;
+
 const context = elements.game.getContext('2d');
 const projectiles = new ProjectilePlayback();
 const lighting = new WorldLighting();
 const audio = new GameAudio();
 const particles = new Particles();
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
 const state = {
   socket: null,
   connected: false,
@@ -86,7 +99,12 @@ const state = {
   frameImpacts: [],
   frameTrails: [],
   renderTime: 0,
+  // Where the camera is actually following. `camera` is this plus the recoil
+  // offset and is what everything renders from; keeping them apart stops the
+  // shake feeding back into the follow and slowly dragging the view off centre.
+  cameraAnchor: { x: 0, y: 0 },
   camera: { x: 0, y: 0 },
+  shake: { x: 0, y: 0 },
   scale: 1,
   mouse: { x: 0, y: 0 },
   lastFrame: performance.now(),
@@ -180,8 +198,12 @@ function receive(message) {
     elements.game.style.cursor = 'none';
     elements['hud-room'].textContent = state.roomCode;
     const me = state.snapshot?.players?.find((player) => player.id === state.playerId);
-    state.camera.x = me?.x ?? state.map.width / 2;
-    state.camera.y = me?.y ?? state.map.height / 2;
+    state.cameraAnchor.x = me?.x ?? state.map.width / 2;
+    state.cameraAnchor.y = me?.y ?? state.map.height / 2;
+    state.camera.x = state.cameraAnchor.x;
+    state.camera.y = state.cameraAnchor.y;
+    state.shake.x = 0;
+    state.shake.y = 0;
     toast(`Garden ${message.map.seed.slice(0, 6).toUpperCase()} generated`);
   } else if (message.type === 'snapshot') {
     state.snapshot = message;
@@ -462,6 +484,21 @@ function watchingMatch() {
 // Counts the result screen down to the next match. Driven from a local deadline
 // rather than straight from snapshots, so the number falls once a second
 // instead of lurching whenever a packet lands.
+// Shoves the view back down the barrel each time this player fires, then lets
+// it settle. Fired from the local shot prediction, so it lands on the same
+// frame as the trigger rather than a round trip later.
+function kickCamera(aim) {
+  if (reducedMotion.matches) return;
+  const scatter = () => (Math.random() - 0.5) * SHAKE_JITTER;
+  state.shake.x += -Math.cos(aim) * SHAKE_RECOIL + scatter();
+  state.shake.y += -Math.sin(aim) * SHAKE_RECOIL + scatter();
+  const reach = Math.hypot(state.shake.x, state.shake.y);
+  if (reach > SHAKE_LIMIT) {
+    state.shake.x *= SHAKE_LIMIT / reach;
+    state.shake.y *= SHAKE_LIMIT / reach;
+  }
+}
+
 function updateCountdown(now) {
   if (state.restartDeadline === null || state.phase !== 'ended' || !watchingMatch()) {
     if (!elements.countdown.hidden) {
@@ -905,9 +942,14 @@ function frame(now) {
     // The camera snaps to our own predicted position rather than easing toward
     // it: easing toward a position that is already correct only adds lag.
     const interpolation = target.id === state.playerId ? 1 : 1 - Math.exp(-8 * delta);
-    state.camera.x += (target.x - state.camera.x) * interpolation;
-    state.camera.y += (target.y - state.camera.y) * interpolation;
+    state.cameraAnchor.x += (target.x - state.cameraAnchor.x) * interpolation;
+    state.cameraAnchor.y += (target.y - state.cameraAnchor.y) * interpolation;
   }
+  const recoilSettle = Math.exp(-SHAKE_DECAY * delta);
+  state.shake.x *= recoilSettle;
+  state.shake.y *= recoilSettle;
+  state.camera.x = state.cameraAnchor.x + state.shake.x;
+  state.camera.y = state.cameraAnchor.y + state.shake.y;
   updateCountdown(now);
   particles.update(delta, state.camera, state.scale, innerWidth, innerHeight);
   drawWorld();
@@ -973,6 +1015,7 @@ function attemptFire(now = performance.now()) {
   state.predictedShots.set(clientShotId, now);
   send({ type: 'fire', shotId: clientShotId, aim: state.aim });
   audio.play('shot');
+  kickCamera(state.aim);
   setTimeout(() => {
     if (!state.predictedShots.delete(clientShotId)) return;
     projectiles.rejectPrediction(clientShotId);
