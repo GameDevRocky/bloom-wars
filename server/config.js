@@ -26,7 +26,7 @@ export const CONFIG = Object.freeze({
     damage: 5,
     fireIntervalMs: 120,
     reloadMs: 1_350,
-    bulletSpeed: 920,
+    bulletSpeed: 1_840,
     bulletRadius: 2,
     // Local aim coordinates, shared with the assembled character renderer.
     // Positive side is to the right of the barrel in screen coordinates.

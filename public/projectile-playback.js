@@ -78,8 +78,18 @@ export class ProjectilePlayback {
         const authoritativeBornAt = localTime(event.spawnedAt);
         track.bornAt = Math.min(track.bornAt, authoritativeBornAt);
         // A confirmed prediction keeps its immediate local birth time while
-        // adopting the server's muzzle and spread from that same visual time.
-        if (track.localImmediate) track.samples = [{ ...event, at: track.bornAt }];
+        // adopting the server's spread. The server player is behind the local
+        // movement prediction by network transit time, so replacing the local
+        // muzzle here would visibly rewind every shot while the player moves.
+        if (track.localImmediate) {
+          const predictedMuzzle = track.samples[0];
+          track.samples = [{
+            ...event,
+            x: predictedMuzzle.x,
+            y: predictedMuzzle.y,
+            at: track.bornAt,
+          }];
+        }
         else track.samples.push({ ...event, at: authoritativeBornAt });
       } else {
         track.impact = { ...event, at: localTime(event.impactedAt) };
@@ -99,7 +109,11 @@ export class ProjectilePlayback {
       }
       const at = localTime(bullet.updatedAt ?? snapshot.serverTime);
       track.bornAt = Math.min(track.bornAt, at);
-      track.samples.push({ ...bullet, at });
+      // A locally predicted projectile has constant velocity, so its confirmed
+      // launch sample is sufficient. Server position samples originate from an
+      // older player transform and would drag the visual projectile backward.
+      // The authoritative impact event still ends it at the real collision.
+      if (!track.localImmediate) track.samples.push({ ...bullet, at });
       track.missingAt = null;
     }
     for (const [id, track] of this.tracks) {

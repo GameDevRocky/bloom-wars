@@ -278,9 +278,12 @@ test('a local prediction renders at the current frame and reconciles to one auth
   near(immediate.bullets[0].x, 30);
 
   receive(playback, 1_010, 2_040, [liveBullet({
-    id: 'server-bullet', ownerId: 'me', clientShotId: 'client-1', x: 20,
+    id: 'server-bullet', ownerId: 'me', clientShotId: 'client-1', x: -10,
     spawnedAt: 1_000, updatedAt: 1_010,
-  })], [shot({ bulletId: 'server-bullet', ownerId: 'me', clientShotId: 'client-1' })]);
+  })], [shot({
+    bulletId: 'server-bullet', ownerId: 'me', clientShotId: 'client-1',
+    x: -20, clientShotId: 'client-1',
+  })]);
 
   assert.equal(playback.tracks.size, 1);
   assert.equal(playback.tracks.has('predicted:client-1'), false);
@@ -288,6 +291,7 @@ test('a local prediction renders at the current frame and reconciles to one auth
   const reconciled = playback.frame(1_930, openMap, 2, { immediateOwnerId: 'me', immediateTime: 2_050 });
   assert.equal(reconciled.bullets.length, 1);
   assert.equal(reconciled.bullets[0].id, 'server-bullet');
+  near(reconciled.bullets[0].x, 60);
 });
 
 test('a rejected local prediction can be removed without affecting other shots', () => {
