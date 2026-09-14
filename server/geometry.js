@@ -23,16 +23,7 @@ export function pointInsideRect(point, rect, padding = 0) {
     && point.y <= rect.y + rect.height + padding;
 }
 
-export function segmentCircleHit(start, end, circle) {
-  const dx = end.x - start.x;
-  const dy = end.y - start.y;
-  const lengthSquared = dx * dx + dy * dy;
-  if (lengthSquared === 0) return distanceSquared(start, circle) <= circle.radius * circle.radius;
-  const projection = clamp(
-    ((circle.x - start.x) * dx + (circle.y - start.y) * dy) / lengthSquared,
-    0,
-    1,
-  );
-  const nearest = { x: start.x + projection * dx, y: start.y + projection * dy };
-  return distanceSquared(nearest, circle) <= circle.radius * circle.radius;
-}
+export {
+  segmentCircleHit, segmentCircleHitTime, segmentRectHitTime,
+  sweptCircleRectHitTime, segmentBoundsExitTime,
+} from '../public/shared/projectiles.js';

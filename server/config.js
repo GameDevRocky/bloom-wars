@@ -1,3 +1,5 @@
+const WORLD_SCALE = 20;
+
 export const CONFIG = Object.freeze({
   tickRate: 30,
   snapshotRate: 15,
@@ -25,7 +27,11 @@ export const CONFIG = Object.freeze({
     fireIntervalMs: 120,
     reloadMs: 1_350,
     bulletSpeed: 920,
-    bulletLifetimeMs: 900,
+    bulletRadius: 2,
+    // Local aim coordinates, shared with the assembled character renderer.
+    // Positive side is to the right of the barrel in screen coordinates.
+    muzzleForward: 34,
+    muzzleSide: 1.75,
     spreadRadians: 0.035,
   }),
   flower: Object.freeze({
@@ -39,14 +45,17 @@ export const CONFIG = Object.freeze({
     damagePerSecond: 1,
     radiusScale: 0.58,
     minimumRadius: 105,
+    maxBoundarySpeedRatio: 0.65,
   }),
   map: Object.freeze({
-    minimumSize: 1_550,
-    sizePerExtraPlayer: 115,
+    // Twenty times the previous width and height; player and tile sizes stay
+    // in world units so this adds explorable space instead of zooming the view.
+    worldScale: WORLD_SCALE,
+    minimumSize: 1_550 * WORLD_SCALE,
+    sizePerExtraPlayer: 115 * WORLD_SCALE,
     obstacleBase: 26,
     obstaclesPerPlayer: 4,
     spawnClearance: 90,
     corridorHalfWidth: 55,
   }),
 });
-

@@ -1,6 +1,8 @@
 import crypto from 'node:crypto';
 import { CONFIG } from './config.js';
-import { clamp, distanceSquared, pointInsideRect } from './geometry.js';
+import {
+  clamp, distanceSquared, segmentBoundsExitTime, segmentCircleHitTime, sweptCircleRectHitTime,
+} from './geometry.js';
 import { generateMap, validateMap } from './map.js';
 import { createRandom, randomBetween } from './random.js';
 import { EMPTY_INPUT, readInput, stepPlayer } from '../public/shared/simulation.js';
@@ -232,6 +234,9 @@ export class Room {
   tick(deltaSeconds) {
     if (this.phase !== 'playing') return;
     const now = this.now();
+    const playerStarts = new Map([...this.players.values()].map((player) => [
+      player.id, { x: player.x, y: player.y },
+    ]));
     this.updateStorm(now);
     for (const player of this.players.values()) {
       if (!player.alive) continue;
@@ -240,7 +245,7 @@ export class Room {
       this.collectPickups(player, now);
       this.applyStormDamage(player, deltaSeconds, now);
     }
-    this.updateBullets(deltaSeconds, now);
+    this.updateBullets(deltaSeconds, now, playerStarts);
     this.checkWinner(now);
   }
 
@@ -299,45 +304,117 @@ export class Room {
     if (now - player.lastShotAt < CONFIG.rifle.fireIntervalMs) return;
     player.lastShotAt = now;
     player.magazine -= 1;
-    const aim = player.input.aim + randomBetween(this.random, -CONFIG.rifle.spreadRadians, CONFIG.rifle.spreadRadians);
-    const muzzle = CONFIG.playerRadius + 7;
-    this.bullets.push({
+    const aim = player.input.aim;
+    const direction = aim + randomBetween(this.random, -CONFIG.rifle.spreadRadians, CONFIG.rifle.spreadRadians);
+    const forward = CONFIG.rifle.muzzleForward;
+    const side = CONFIG.rifle.muzzleSide;
+    const bullet = {
       id: crypto.randomUUID(),
       ownerId: player.id,
-      x: player.x + Math.cos(aim) * muzzle,
-      y: player.y + Math.sin(aim) * muzzle,
-      vx: Math.cos(aim) * CONFIG.rifle.bulletSpeed,
-      vy: Math.sin(aim) * CONFIG.rifle.bulletSpeed,
-      expiresAt: now + CONFIG.rifle.bulletLifetimeMs,
+      x: player.x + Math.cos(aim) * forward - Math.sin(aim) * side,
+      y: player.y + Math.sin(aim) * forward + Math.cos(aim) * side,
+      vx: Math.cos(direction) * CONFIG.rifle.bulletSpeed,
+      vy: Math.sin(direction) * CONFIG.rifle.bulletSpeed,
+      spawnedAt: now,
+      simulatedAt: now,
+    };
+    // The barrel can protrude through cover while the body is against it.
+    // Trace from the body to the muzzle so those shots hit that cover first.
+    const obstruction = this.firstBulletHit(player, bullet, bullet.ownerId);
+    if (obstruction) {
+      bullet.x = player.x + (bullet.x - player.x) * obstruction.time;
+      bullet.y = player.y + (bullet.y - player.y) * obstruction.time;
+    }
+    this.events.push({
+      type: 'shot', bulletId: bullet.id, playerId: player.id, ownerId: player.id,
+      x: bullet.x, y: bullet.y, vx: bullet.vx, vy: bullet.vy, spawnedAt: now,
     });
+    if (obstruction) this.impactBullet(bullet, obstruction, now);
+    else this.bullets.push(bullet);
   }
 
-  updateBullets(deltaSeconds, now) {
+  firstBulletHit(start, end, ownerId, playerStarts = null, startFraction = 0) {
+    let nearest = null;
+    const consider = (time, hit, playerId) => {
+      if (time !== null && (!nearest || time < nearest.time)) nearest = { time, hit, playerId };
+    };
+    const radius = CONFIG.rifle.bulletRadius;
+    consider(segmentBoundsExitTime(start, end, this.map.width, this.map.height, radius), 'bounds');
+    for (const obstacle of this.map.obstacles) {
+      consider(sweptCircleRectHitTime(start, end, radius, obstacle), 'wall');
+    }
+    for (const player of this.players.values()) {
+      if (!player.alive || player.id === ownerId) continue;
+      const previous = playerStarts?.get(player.id) ?? player;
+      const playerStart = {
+        x: previous.x + (player.x - previous.x) * startFraction,
+        y: previous.y + (player.y - previous.y) * startFraction,
+      };
+      // Sweep in the moving player's frame of reference. A player crossing
+      // the path between ticks can be hit even if both endpoints are clear.
+      const relativeStart = { x: start.x - playerStart.x, y: start.y - playerStart.y };
+      const relativeEnd = { x: end.x - player.x, y: end.y - player.y };
+      consider(segmentCircleHitTime(relativeStart, relativeEnd, {
+        x: 0, y: 0, radius: CONFIG.playerRadius + radius,
+      }), 'player', player.id);
+    }
+    return nearest;
+  }
+
+  impactBullet(bullet, collision, now) {
+    this.events.push({
+      type: 'bullet_impact', bulletId: bullet.id, ownerId: bullet.ownerId,
+      x: bullet.x, y: bullet.y, vx: bullet.vx, vy: bullet.vy,
+      hit: collision.hit, playerId: collision.playerId, impactedAt: now,
+    });
+    if (collision.hit === 'player') {
+      this.damage(this.players.get(collision.playerId), CONFIG.rifle.damage, bullet.ownerId, 'rifle');
+    }
+  }
+
+  updateBullets(deltaSeconds, now, playerStarts = null) {
     const active = [];
     for (const bullet of this.bullets) {
-      if (bullet.expiresAt <= now) continue;
-      bullet.x += bullet.vx * deltaSeconds;
-      bullet.y += bullet.vy * deltaSeconds;
-      if (bullet.x < 0 || bullet.x > this.map.width || bullet.y < 0 || bullet.y > this.map.height) continue;
-      if (this.map.obstacles.some((obstacle) => pointInsideRect(bullet, obstacle, 2))) continue;
-      const target = [...this.players.values()].find((player) => (
-        player.alive
-        && player.id !== bullet.ownerId
-        && distanceSquared(player, bullet) <= (CONFIG.playerRadius + 3) ** 2
-      ));
-      if (target) {
-        this.damage(target, CONFIG.rifle.damage, bullet.ownerId, 'rifle');
+      // A shot created at the end of this tick starts at the muzzle; it must
+      // not get a full tick of travel before its published spawn timestamp.
+      const elapsed = bullet.simulatedAt === undefined ? deltaSeconds : (now - bullet.simulatedAt) / 1_000;
+      const step = Math.max(0, Math.min(deltaSeconds, elapsed));
+      const end = { x: bullet.x + bullet.vx * step, y: bullet.y + bullet.vy * step };
+      const startFraction = deltaSeconds > 0 ? 1 - step / deltaSeconds : 1;
+      const collision = this.firstBulletHit(bullet, end, bullet.ownerId, playerStarts, startFraction);
+      if (collision) {
+        bullet.x += (end.x - bullet.x) * collision.time;
+        bullet.y += (end.y - bullet.y) * collision.time;
+        this.impactBullet(bullet, collision, now - step * 1_000 * (1 - collision.time));
         continue;
       }
+      bullet.x = end.x;
+      bullet.y = end.y;
+      bullet.simulatedAt = now;
       active.push(bullet);
     }
     this.bullets = active;
   }
 
+  stormContractionDuration() {
+    const { from, to } = this.storm;
+    // The fastest side moves by the radius loss plus the center's travel.
+    // Allow time to outrun that edge, even on the largest population map.
+    const boundaryTravel = Math.max(0, from.radius - to.radius)
+      + Math.hypot(to.x - from.x, to.y - from.y);
+    return Math.max(CONFIG.storm.contractionMs, Math.ceil(
+      boundaryTravel / (CONFIG.playerSpeed * CONFIG.storm.maxBoundarySpeedRatio) * 1_000,
+    ));
+  }
+
   currentStorm(now = this.now()) {
     if (!this.storm) return null;
-    if (this.storm.phase === 'holding') return { ...this.storm.to, phase: 'holding', cycle: this.storm.cycle, progress: 1 };
-    const progress = clamp((now - this.storm.phaseStartedAt) / CONFIG.storm.contractionMs, 0, 1);
+    if (this.storm.phase === 'holding') return {
+      ...this.storm.to, phase: 'holding', cycle: this.storm.cycle,
+      progress: 1, durationMs: CONFIG.storm.holdMs,
+    };
+    const durationMs = this.stormContractionDuration();
+    const progress = clamp((now - this.storm.phaseStartedAt) / durationMs, 0, 1);
     return {
       x: this.storm.from.x + (this.storm.to.x - this.storm.from.x) * progress,
       y: this.storm.from.y + (this.storm.to.y - this.storm.from.y) * progress,
@@ -345,11 +422,12 @@ export class Room {
       phase: 'contracting',
       cycle: this.storm.cycle,
       progress,
+      durationMs,
     };
   }
 
   updateStorm(now) {
-    if (this.storm.phase === 'contracting' && now - this.storm.phaseStartedAt >= CONFIG.storm.contractionMs) {
+    if (this.storm.phase === 'contracting' && now - this.storm.phaseStartedAt >= this.stormContractionDuration()) {
       this.storm.phase = 'holding';
       this.storm.phaseStartedAt = now;
     } else if (this.storm.phase === 'holding' && now - this.storm.phaseStartedAt >= CONFIG.storm.holdMs) {
@@ -426,9 +504,11 @@ export class Room {
     };
   }
 
-  snapshot() {
+  snapshot({ includeEvents = true } = {}) {
     const now = this.now();
-    const events = this.events.splice(0);
+    // A single-client initial state must not drain events owed to the room.
+    // It receives the next broadcast's events together with everyone else.
+    const events = includeEvents ? this.events.splice(0) : [];
     return {
       type: 'snapshot',
       serverTime: now,
@@ -440,8 +520,9 @@ export class Room {
       pickups: this.map?.pickups ?? [],
       // Velocity travels with each bullet so clients can slide it between
       // updates; at 920 u/s it would otherwise jump a body-length per snapshot.
-      bullets: this.bullets.map(({ id, x, y, vx, vy }) => ({
-        id, x: Math.round(x), y: Math.round(y), vx: Math.round(vx), vy: Math.round(vy),
+      bullets: this.bullets.map(({ id, ownerId, x, y, vx, vy, spawnedAt, simulatedAt }) => ({
+        id, ownerId, spawnedAt, updatedAt: simulatedAt,
+        x: Math.round(x * 10) / 10, y: Math.round(y * 10) / 10, vx, vy,
       })),
       storm: this.currentStorm(now),
       events,

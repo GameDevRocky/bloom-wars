@@ -16,6 +16,10 @@ const elements = Object.fromEntries([
 ].map((id) => [id, document.getElementById(id)]));
 
 import { EMPTY_INPUT, stepPlayer } from './shared/simulation.js';
+import { drawCharacter as drawSpriteCharacter } from './character-renderer.js';
+import { ProjectilePlayback } from './projectile-playback.js';
+import { loadWorldArt, drawWorldFloor, drawWorldObstacle, drawWorldBorder } from './world-renderer.js';
+import { WorldLighting, clippedMuzzle } from './lighting.js';
 
 // Other players are drawn this far in the past, so there is always a pair of
 // received snapshots to slide between instead of a single latest position to
@@ -29,6 +33,8 @@ const EXTRAPOLATION_LIMIT_MS = 250;
 const RECONCILE_SMOOTH_LIMIT = 90;
 
 const context = elements.game.getContext('2d');
+const projectiles = new ProjectilePlayback();
+const lighting = new WorldLighting();
 const state = {
   socket: null,
   connected: false,
@@ -55,6 +61,9 @@ const state = {
   // Entities as positioned for the current frame, shared by drawing and camera.
   frameTargets: [],
   frameBullets: [],
+  frameImpacts: [],
+  frameTrails: [],
+  renderTime: 0,
   camera: { x: 0, y: 0 },
   scale: 1,
   mouse: { x: 0, y: 0 },
@@ -119,6 +128,11 @@ function receive(message) {
     state.isHost = message.hostId === state.playerId;
     updateLobby(message);
   } else if (message.type === 'match_started') {
+    projectiles.clear();
+    state.history = [];
+    state.pending = [];
+    state.predicted = null;
+    state.correction = { x: 0, y: 0 };
     state.map = message.map;
     state.phase = 'playing';
     elements.menu.hidden = true;
@@ -126,6 +140,7 @@ function receive(message) {
     elements.hud.hidden = false;
     elements.controls.hidden = false;
     elements.announcement.hidden = true;
+    elements.game.style.cursor = 'none';
     elements['hud-room'].textContent = state.roomCode;
     const me = state.snapshot?.players?.find((player) => player.id === state.playerId);
     state.camera.x = me?.x ?? state.map.width / 2;
@@ -134,11 +149,13 @@ function receive(message) {
   } else if (message.type === 'snapshot') {
     state.snapshot = message;
     state.phase = message.phase;
+    const arrival = performance.now();
+    projectiles.receive(message, arrival);
 
     // Timestamped on arrival: interpolation runs on the local clock, so it
     // needs no clock synchronisation with the server.
     state.history.push({
-      at: performance.now(),
+      at: arrival,
       players: message.players ?? [],
       bullets: message.bullets ?? [],
     });
@@ -218,7 +235,7 @@ function updateHud() {
   const storm = state.snapshot.storm;
   if (storm) {
     elements['storm-label'].textContent = `STORM / CYCLE ${storm.cycle}`;
-    const duration = storm.phase === 'contracting' ? state.config.storm.contractionMs : state.config.storm.holdMs;
+    const duration = storm.durationMs ?? (storm.phase === 'contracting' ? state.config.storm.contractionMs : state.config.storm.holdMs);
     const remaining = storm.phase === 'contracting'
       ? duration * (1 - storm.progress)
       : duration;
@@ -263,6 +280,9 @@ function resize() {
   elements.game.style.width = `${innerWidth}px`;
   elements.game.style.height = `${innerHeight}px`;
   context.setTransform(ratio, 0, 0, ratio, 0, 0);
+  if (state.mouse.x || state.mouse.y) {
+    state.aim = Math.atan2(state.mouse.y - innerHeight / 2, state.mouse.x - innerWidth / 2);
+  }
 }
 
 function worldToScreen(point) {
@@ -273,10 +293,6 @@ function worldToScreen(point) {
 }
 
 // ── character sprites ───────────────────────────────────────────────────────
-// Body art and weapons are drawn pointing up in the sheets, the arms hanging
-// down, so each needs a quarter turn to line up with an aim of 0 (due east).
-const BODY_TURN = Math.PI / 2;
-const ARM_TURN = -Math.PI / 2;
 const art = { atlas: null, skins: null, weapons: null, ready: false };
 
 function loadImage(source) {
@@ -314,31 +330,28 @@ function drawSprite(image, rect, angle, scale, anchorX, anchorY) {
 }
 
 function drawWorld() {
-  context.fillStyle = PALETTE.leaf;
+  context.fillStyle = '#161f25';
   context.fillRect(0, 0, innerWidth, innerHeight);
   if (!state.map || !state.snapshot) return;
 
-  const topLeft = worldToScreen({ x: 0, y: 0 });
-  context.fillStyle = PALETTE.moss;
-  context.fillRect(topLeft.x, topLeft.y, state.map.width * state.scale, state.map.height * state.scale);
-  drawPaths();
+  drawWorldFloor(context, state.map, state.camera, state.scale, innerWidth, innerHeight);
   drawStorm();
-  for (const obstacle of state.map.obstacles) drawObstacle(obstacle);
+  for (const obstacle of state.map.obstacles) {
+    drawWorldObstacle(context, obstacle, state.camera, state.scale, innerWidth, innerHeight);
+  }
   for (const pickup of state.snapshot.pickups ?? []) drawPickup(pickup);
-  for (const bullet of state.frameBullets ?? []) drawBullet(bullet);
   for (const player of state.frameTargets ?? []) if (player.alive) drawPlayer(player);
-  drawMapBorder(topLeft);
-}
-
-function drawPaths() {
-  const center = state.map.width / 2;
-  const horizontal = worldToScreen({ x: 0, y: center - 35 });
-  const vertical = worldToScreen({ x: center - 35, y: 0 });
-  context.fillStyle = PALETTE.stone;
-  context.globalAlpha = 0.38;
-  context.fillRect(horizontal.x, horizontal.y, state.map.width * state.scale, 70 * state.scale);
-  context.fillRect(vertical.x, vertical.y, 70 * state.scale, state.map.height * state.scale);
-  context.globalAlpha = 1;
+  drawWorldBorder(context, state.map, state.camera, state.scale, innerWidth, innerHeight);
+  lighting.draw(context, {
+    map: state.map, camera: state.camera, scale: state.scale, width: innerWidth, height: innerHeight,
+    players: state.frameTargets, pickups: state.snapshot.pickups ?? [], impacts: state.frameImpacts,
+    focusId: me()?.alive ? state.playerId : me()?.spectatorTargetId,
+    rifle: state.config.rifle, shotAge: (id) => projectiles.shotAge(id, state.renderTime),
+  });
+  for (const trail of state.frameTrails) drawBulletTrail(trail);
+  for (const bullet of state.frameBullets) drawBullet(bullet);
+  for (const impact of state.frameImpacts) drawImpact(impact);
+  drawCrosshair();
 }
 
 function drawStorm() {
@@ -360,24 +373,19 @@ function drawStorm() {
   context.restore();
 }
 
-function drawObstacle(obstacle) {
-  const position = worldToScreen(obstacle);
-  const colors = obstacle.kind === 'hedge'
-    ? [PALETTE.forest, PALETTE.leaf]
-    : obstacle.kind === 'rock' ? [PALETTE.stone, '#777763'] : [PALETTE.forestDark, PALETTE.stone];
-  context.fillStyle = colors[0];
-  context.fillRect(position.x, position.y, obstacle.width * state.scale, obstacle.height * state.scale);
-  context.strokeStyle = colors[1];
-  context.lineWidth = Math.max(2, 4 * state.scale);
-  context.strokeRect(position.x + 2, position.y + 2, obstacle.width * state.scale - 4, obstacle.height * state.scale - 4);
-}
-
 const PICKUP_ART = { rifle: 'rifle', ammo: 'magazine' };
 
 function drawPickup(pickup) {
   const position = worldToScreen(pickup);
   context.save();
   context.translate(position.x, position.y);
+  context.fillStyle = 'rgba(15, 23, 29, 0.7)';
+  context.strokeStyle = pickup.kind === 'seed' ? '#ff8c9c' : '#cdb56b';
+  context.lineWidth = 1;
+  context.beginPath();
+  context.arc(0, 0, 24 * state.scale, 0, Math.PI * 2);
+  context.fill();
+  context.stroke();
 
   const artName = PICKUP_ART[pickup.kind];
   if (art.ready && artName) {
@@ -415,61 +423,51 @@ function drawPickup(pickup) {
   context.restore();
 }
 
-function drawBullet(bullet) {
-  const position = worldToScreen(bullet);
-  context.fillStyle = PALETTE.cream;
+function drawBulletTrail(trail) {
+  const tail = worldToScreen({ x: trail.x1, y: trail.y1 });
+  const head = worldToScreen({ x: trail.x2, y: trail.y2 });
+  if (Math.max(tail.x, head.x) < -12 || Math.min(tail.x, head.x) > innerWidth + 12
+    || Math.max(tail.y, head.y) < -12 || Math.min(tail.y, head.y) > innerHeight + 12) return;
+  context.save();
+  context.globalCompositeOperation = 'screen';
+  context.globalAlpha = trail.alpha;
+  // Square endpoints stop at actual flight positions; broad glow fades into
+  // a narrow bright core, including during the final fade at a wall.
+  context.lineCap = 'butt';
+  const gradient = context.createLinearGradient(tail.x, tail.y, head.x, head.y);
+  gradient.addColorStop(0, 'rgba(255, 161, 65, 0)');
+  gradient.addColorStop(0.35, 'rgba(255, 181, 87, 0.38)');
+  gradient.addColorStop(1, 'rgba(255, 231, 171, 0.98)');
+  context.strokeStyle = gradient;
   context.beginPath();
-  context.arc(position.x, position.y, 3, 0, Math.PI * 2);
-  context.fill();
+  context.moveTo(tail.x, tail.y);
+  context.lineTo(head.x, head.y);
+  context.lineWidth = 7 * state.scale;
+  context.globalAlpha = trail.alpha * 0.2;
+  context.stroke();
+  context.lineWidth = 2 * state.scale;
+  context.globalAlpha = trail.alpha;
+  context.stroke();
+  context.restore();
 }
 
-function drawCharacter(player, radius) {
-  const variants = art.atlas.skins.variants;
-  const variant = variants[(player.skin ?? 0) % variants.length];
-  const scale = (radius * 2.5) / variant.torso.w;
-  const aim = player.aim;
-  const cos = Math.cos(aim);
-  const sin = Math.sin(aim);
-  // Offsets are given as (forward, sideways) from the player's centre so the
-  // whole rig follows the aim without each part needing its own trigonometry.
-  const place = (forward, side) => {
-    context.translate(forward * cos - side * sin, forward * sin + side * cos);
-  };
-
+function drawBullet(bullet) {
+  const position = worldToScreen(bullet);
   context.save();
-  place(-radius * 0.5, 0);
-  drawSprite(art.skins, variant.legs, aim + BODY_TURN, scale * 0.92, 0.5, 0.5);
+  context.translate(position.x, position.y);
+  context.rotate(Math.atan2(bullet.vy, bullet.vx));
+  context.scale(state.scale, state.scale);
+  if (art.ready) {
+    // This is the projectile assigned to BulletPrefab in the reference scene.
+    const rect = art.atlas.weapons.items.magazine;
+    context.shadowColor = '#ffe1a0';
+    context.shadowBlur = 3;
+    drawSprite(art.weapons, rect, -Math.PI / 2, 11 / rect.h, 0.5, 1);
+  } else {
+    context.fillStyle = '#f2cf7c';
+    context.fillRect(-10, -2, 10, 4);
+  }
   context.restore();
-
-  drawSprite(art.skins, variant.torso, aim + BODY_TURN, scale, 0.5, 0.5);
-
-  if (player.hasRifle) {
-    // The rifle's muzzle is the nub at the bottom of its sprite, so it turns
-    // with the arms rather than the body, and anchors near its rear so the
-    // barrel reaches forward out of the hands instead of back through the player.
-    const rifle = art.atlas.weapons.items.rifle;
-    context.save();
-    place(radius * 0.34, radius * 0.3);
-    drawSprite(art.weapons, rifle, aim + ARM_TURN, (radius * 2.4) / rifle.h, 0.5, 0.2);
-    context.restore();
-  }
-
-  // Arms after the rifle so the hands read as gripping it. Each is angled in
-  // toward the grip; aiming both straight down the sight line leaves the far
-  // arm waving off to one side.
-  const armScale = scale * 0.5;
-  const arms = [
-    [variant.armLong, radius * 0.2, -radius * 0.42, 0.62],
-    [variant.armBent, radius * 0.24, radius * 0.44, -0.12],
-  ];
-  for (const [part, forward, side, lean] of arms) {
-    context.save();
-    place(forward, side);
-    drawSprite(art.skins, part, aim + ARM_TURN + lean, armScale, 0.5, 0.12);
-    context.restore();
-  }
-
-  drawSprite(art.skins, variant.head, aim + BODY_TURN, scale * 0.62, 0.5, 0.5);
 }
 
 function drawFallbackCharacter(player, radius) {
@@ -493,17 +491,26 @@ function drawPlayer(player) {
   const radius = state.config.playerRadius * state.scale;
   context.save();
   context.translate(position.x, position.y);
-  if (art.ready) drawCharacter(player, radius);
+  context.fillStyle = 'rgba(0, 0, 0, 0.28)';
+  context.beginPath();
+  context.ellipse(0, 3 * state.scale, radius * 1.04, radius * 0.88, player.aim, 0, Math.PI * 2);
+  context.fill();
+  const shotAge = projectiles.shotAge(player.id, state.renderTime);
+  if (art.ready) drawSpriteCharacter(context, player, radius, art, {
+    recoil: Math.max(0, 1 - shotAge / 110),
+    stride: Math.sin(state.lastFrame / 85) * Math.min(1, Math.hypot(player.vx ?? 0, player.vy ?? 0) / 225),
+  });
   else drawFallbackCharacter(player, radius);
+  if (player.hasRifle && shotAge < 65) drawMuzzleFlash(player, shotAge);
   context.restore();
 
   if (player.id === state.playerId) {
     // Own-player ring: 16 near-identical silhouettes are hard to tell apart in a
     // crowd, and the skin colour alone does not survive a panicked glance.
-    context.strokeStyle = PALETTE.pink;
-    context.lineWidth = 2;
+    context.strokeStyle = 'rgba(255, 132, 151, 0.65)';
+    context.lineWidth = 1.5;
     context.beginPath();
-    context.arc(position.x, position.y, radius * 1.6, 0, Math.PI * 2);
+    context.arc(position.x, position.y, radius * 1.3, player.aim + 0.8, player.aim + Math.PI * 2 - 0.8);
     context.stroke();
   }
 
@@ -519,10 +526,68 @@ function drawPlayer(player) {
   context.fillText(player.name, position.x, position.y + labelGap + 14);
 }
 
-function drawMapBorder(topLeft) {
-  context.strokeStyle = PALETTE.forestDark;
-  context.lineWidth = 12;
-  context.strokeRect(topLeft.x, topLeft.y, state.map.width * state.scale, state.map.height * state.scale);
+function drawMuzzleFlash(player, age) {
+  context.save();
+  const muzzle = clippedMuzzle(player, state.config.rifle, state.map);
+  context.translate((muzzle.x - player.x) * state.scale, (muzzle.y - player.y) * state.scale);
+  context.rotate(player.aim);
+  context.scale(state.scale, state.scale);
+  context.globalAlpha = 1 - age / 65;
+  context.fillStyle = '#ffe3a5';
+  context.shadowColor = '#ffd272';
+  context.shadowBlur = 12;
+  context.beginPath();
+  context.moveTo(0, -3);
+  context.lineTo(9, -5);
+  context.lineTo(6, -1);
+  context.lineTo(16, 0);
+  context.lineTo(6, 2);
+  context.lineTo(9, 5);
+  context.lineTo(0, 3);
+  context.closePath();
+  context.fill();
+  context.restore();
+}
+
+function drawImpact(impact) {
+  const position = worldToScreen(impact);
+  const progress = impact.age / 180;
+  const angle = Math.atan2(-impact.vy, -impact.vx);
+  context.save();
+  context.translate(position.x, position.y);
+  context.scale(state.scale, state.scale);
+  context.globalAlpha = 1 - progress;
+  context.strokeStyle = impact.hit === 'player' ? '#ff879a' : '#ffdc96';
+  context.lineWidth = 1.6;
+  for (let i = -2; i <= 2; i += 1) {
+    const direction = angle + i * 0.55;
+    const distance = 3 + progress * (10 + (i % 2) * 3);
+    context.beginPath();
+    context.moveTo(Math.cos(direction) * distance, Math.sin(direction) * distance);
+    context.lineTo(Math.cos(direction) * (distance + 4), Math.sin(direction) * (distance + 4));
+    context.stroke();
+  }
+  context.restore();
+}
+
+function drawCrosshair() {
+  if (state.phase !== 'playing' || !me()?.alive) return;
+  const { x, y } = state.mouse;
+  if (!x && !y) return;
+  context.save();
+  context.translate(x, y);
+  context.strokeStyle = '#f3ead2';
+  context.lineWidth = 1.5;
+  context.shadowColor = '#10181e';
+  context.shadowBlur = 3;
+  context.beginPath();
+  for (let i = 0; i < 4; i += 1) {
+    const angle = i * Math.PI / 2;
+    context.moveTo(Math.cos(angle) * 5, Math.sin(angle) * 5);
+    context.lineTo(Math.cos(angle) * 10, Math.sin(angle) * 10);
+  }
+  context.stroke();
+  context.restore();
 }
 
 function frame(now) {
@@ -536,8 +601,12 @@ function frame(now) {
   state.correction.y *= settle;
 
   const renderTime = performance.now() - INTERPOLATION_DELAY_MS;
+  state.renderTime = renderTime;
   state.frameTargets = renderedPlayers(renderTime);
-  state.frameBullets = interpolatedBullets(renderTime);
+  const projectileFrame = projectiles.frame(renderTime, state.map, state.config?.rifle.bulletRadius);
+  state.frameBullets = projectileFrame.bullets;
+  state.frameImpacts = projectileFrame.impacts;
+  state.frameTrails = projectileFrame.trails;
   const target = cameraTarget();
   if (target) {
     // The camera snaps to our own predicted position rather than easing toward
@@ -673,14 +742,6 @@ function interpolatedPlayers(renderTime) {
   }));
 }
 
-function interpolatedBullets(renderTime) {
-  return interpolate(renderTime, 'bullets', (before, after, ratio) => ({
-    ...after,
-    x: before.x + (after.x - before.x) * ratio,
-    y: before.y + (after.y - before.y) * ratio,
-  }));
-}
-
 // Shortest way round the circle, so aim never spins the long way at the seam.
 function angleDelta(from, to) {
   return Math.atan2(Math.sin(to - from), Math.cos(to - from));
@@ -727,5 +788,6 @@ window.addEventListener('resize', resize);
 resize();
 setInterval(sendInput, 1_000 / 30);
 loadArt();
+loadWorldArt();
 connect();
 requestAnimationFrame(frame);

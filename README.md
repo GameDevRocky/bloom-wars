@@ -1,6 +1,6 @@
 # Bloom
 
-Bloom is a browser-based, top-down multiplayer survival game. Players enter an overgrown procedural garden unarmed, collect a rifle and one growing flower, and fight inside a safe zone that contracts in 60-second breaths.
+Bloom is a browser-based, top-down multiplayer survival game. Players enter a procedural garden unarmed, collect a rifle and one growing flower, and fight inside a contracting safe zone.
 
 This repository contains the first playable vertical slice from the Game Design Document:
 
@@ -9,9 +9,9 @@ This repository contains the first playable vertical slice from the Game Design 
 - Procedural gardens that scale with population and preserve protected spawns plus connected central routes
 - One rifle with automatic fire, spread, ammunition, and reloads
 - One carried seed that grows from 1 to 50 stored HP and is consumed with `E`
-- Repeating 60-second storm contractions and 10-second holds
+- Storm contractions of at least 60 seconds, scaled for map size, and 10-second holds
 - Killer-chain spectators and late-join spectating
-- Canvas client using the GDD palette and strict top-down flat-shape direction
+- Canvas client with modular sprite characters, tiled floors and cover, and sprite projectiles
 
 ## Run locally
 
@@ -29,9 +29,23 @@ Controls: `WASD` to move, mouse to aim, hold left-click to fire, `R` to reload, 
 
 ## Network protocol
 
-The client opens `/play` over WebSocket. Clients send room actions and current input intent; the server simulates at 30 Hz and broadcasts authoritative snapshots at 15 Hz. The browser interpolates the camera and renders snapshots but never decides hits, health, pickups, elimination, spectator targets, or storm geometry.
+The client opens `/play` over WebSocket. Clients send room actions and current input intent; the server simulates at 30 Hz and broadcasts authoritative snapshots at 15 Hz. The browser predicts local movement using the shared simulation and reconciles it against the server; other players are interpolated. Hits, health, pickups, elimination, spectator targets, and storm geometry remain authoritative.
+
+Bullets travel until their first collision with a player, solid cover, or the map boundary. Continuous sweeps test the full path between ticks, including relative player motion and muzzle obstruction. Timestamped shot and impact events let the client render even a shot that hits between snapshots, with a sprite, muzzle flash, and impact sparks. Glowing trails follow the last 90 milliseconds of actual flight and fade for 120 milliseconds after impact. Trails stay in world coordinates as the camera moves; visual extrapolation also stops at cover when a packet arrives late.
 
 All tuning constants live in `server/config.js`. The first capacity safety rail is 64 players per room; that is an implementation guard, not a claimed tested capacity.
+
+The world is 20 times its original width and height: 31,000 × 31,000 units for up to four players, growing to 169,000 × 169,000 at 64 players. Player, tile, and movement scales stay constant. The original populated garden remains around the spawns, with extra cover and loot throughout the expanded outskirts. Cover and pickup counts remain bounded by population. Larger storm contractions take enough time to keep the fastest boundary movement below 65% of player running speed; later small circles return to the 60-second minimum.
+
+## Sprite artwork
+
+The character renderer uses separate body, backpack, head, and arm sprites. The backpack sits behind the shoulders; arms attach at shoulder pivots with separate resting positions and rifle grips, keeping the hands from crossing. All parts share the character's aim transform. The reference projectile is the weapon atlas entry named `magazine`. Rifle muzzle offsets in `server/config.js` match the rig in `public/character-renderer.js`.
+
+The supplied 256-pixel tilesheet is bundled as `public/assets/tiles.png`, with explicit crops in `tiles.json`. Floors use 64 world units per tile; wall edges and crate stacks fit the map's existing collision rectangles. Only visible tiles and cover are drawn, including on large maps.
+
+Lighting adds a cool ambient tone, soft light around players, aimed rifle beams, pickup glows, and warm muzzle/impact illumination. Cover and map boundaries occlude each light, including obstructed muzzles. The light buffer is half the viewport resolution and the number of nearby lights is capped, so lighting memory does not grow with world dimensions. HUD and crosshair rendering stays above the lighting pass.
+
+To regenerate the world atlas after replacing the source sheet, run `node scripts/extract-world-atlas.mjs`; set `BLOOM_ART_DIR` to the directory containing the source artwork. Runtime assets are included in the repository, so running the game requires no external art folder or extraction tools.
 
 ## Production topology
 
@@ -106,8 +120,7 @@ Once the project is linked, pushing to the connected GitHub branch triggers an a
 ## Production follow-ups
 
 - Playtest and record practical room capacity, latency, bandwidth, and match length
-- Add client-side movement prediction with reconciliation after baseline networking is measured
 - Replace the guaranteed cross-corridor validator with a full navigation-grid connectivity test as map shapes become more complex
 - Add reconnect tokens and a short disconnect grace period
 - Partition rooms before adding more server nodes
-- Add sound, gamepad/accessibility options, and final sprite assets
+- Add sound and gamepad/accessibility options

@@ -159,11 +159,11 @@ test('consuming a flower heals without passing max HP and empties the slot', () 
   assert.equal(host.flowerCollectedAt, null);
 });
 
-test('storm contracts for sixty seconds, holds for ten, then chooses a nested target', () => {
+test('storm finishes its published contraction duration, holds for ten seconds, then chooses a nested target', () => {
   const { room, advance } = controlledRoom(['host']);
   room.start('host');
   const initialRadius = room.storm.from.radius;
-  advance(60_000);
+  advance(room.currentStorm().durationMs);
   room.tick(0);
   assert.equal(room.storm.phase, 'holding');
   assert.ok(room.currentStorm().radius < initialRadius);
@@ -172,6 +172,8 @@ test('storm contracts for sixty seconds, holds for ten, then chooses a nested ta
   assert.equal(room.storm.phase, 'contracting');
   assert.equal(room.storm.cycle, 2);
   assert.ok(room.storm.to.radius <= room.storm.from.radius);
+  assert.ok(Math.hypot(room.storm.to.x - room.storm.from.x, room.storm.to.y - room.storm.from.y)
+    + room.storm.to.radius <= room.storm.from.radius + 1e-9);
 });
 
 test('spectators transfer atomically down the killer chain', () => {

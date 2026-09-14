@@ -23,3 +23,24 @@ test('generated loot covers rifles, ammunition, and seeds', () => {
     assert.ok(map.pickups.filter((pickup) => pickup.kind === kind).length >= 6);
   }
 });
+
+test('expanded worlds preserve the populated starting garden and add outer cover and loot', () => {
+  for (const count of [1, 8, 64]) {
+    const map = generateMap(count, `expanded-${count}`);
+    const previousSize = 1_550 + Math.max(0, count - 4) * 115;
+    assert.equal(map.width, previousSize * 20);
+    assert.equal(map.height, previousSize * 20);
+    const region = map.startingRegion;
+    const inside = (point) => point.x >= region.x && point.x <= region.x + region.width
+      && point.y >= region.y && point.y <= region.y + region.height;
+    assert.ok(map.spawns.every(inside));
+    assert.ok(map.obstacles.filter(inside).length >= 26 + count * 4);
+    assert.ok(map.obstacles.some((obstacle) => !inside(obstacle)));
+    for (const kind of ['rifle', 'ammo', 'seed']) {
+      assert.ok(map.pickups.filter((pickup) => pickup.kind === kind && inside(pickup)).length >= count,
+        `${kind} must remain available in the starting garden`);
+      assert.ok(map.pickups.some((pickup) => pickup.kind === kind && !inside(pickup)));
+    }
+    assert.deepEqual(validateMap(map), { valid: true, issues: [] });
+  }
+});

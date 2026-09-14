@@ -51,7 +51,7 @@ function handleMessage(socket, raw) {
       broadcastRoom(room, room.lobbyState());
       if (room.phase === 'playing') {
         send(socket, room.matchStartedMessage());
-        send(socket, room.snapshot());
+        send(socket, room.snapshot({ includeEvents: false }));
       }
       return;
     }

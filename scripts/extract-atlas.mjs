@@ -71,13 +71,13 @@ function findComponents({ width, height, raw }) {
   return { width, height, components };
 }
 
-// Parts within one skin cell, left to right: [torso over legs], head, bent arm,
-// straight arm. Torso and legs share a column, so they split on y.
+// Parts within one skin cell, left to right: [backpack over body], head, bent arm,
+// straight arm. Backpack and body share a column, so they split on y.
 function classifySkin(parts) {
   const byX = [...parts].sort((a, b) => a.x - b.x);
   const [first, second] = byX.slice(0, 2).sort((a, b) => a.y - b.y);
   const rest = byX.slice(2);
-  return { torso: first, legs: second, head: rest[0], armBent: rest[1], armLong: rest[2] };
+  return { backpack: first, body: second, head: rest[0], armBent: rest[1], armLong: rest[2] };
 }
 
 const skinSheet = findComponents(readPixels(join(SOURCE_DIR, "Skins.png")));

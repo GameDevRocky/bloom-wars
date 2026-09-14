@@ -73,8 +73,23 @@ export function stepPlayer(body, input, config, map, deltaSeconds) {
     x: clamp(body.x + body.vx * deltaSeconds, radius, map.width - radius),
     y: clamp(body.y + body.vy * deltaSeconds, radius, map.height - radius),
   };
-  for (const obstacle of map.obstacles) {
-    position = resolveCircleRect(position, radius, obstacle);
+  // Resolving one corner can push the body into neighboring cover. Iterate
+  // contact resolution so a gap narrower than the body stops the player at
+  // both corners instead of leaving them embedded in whichever was first.
+  for (let pass = 0; pass < 12; pass += 1) {
+    let correction = 0;
+    for (const obstacle of map.obstacles) {
+      const resolved = resolveCircleRect(position, radius, obstacle);
+      correction = Math.max(correction, Math.hypot(resolved.x - position.x, resolved.y - position.y));
+      position = resolved;
+    }
+    const bounded = {
+      x: clamp(position.x, radius, map.width - radius),
+      y: clamp(position.y, radius, map.height - radius),
+    };
+    correction = Math.max(correction, Math.hypot(bounded.x - position.x, bounded.y - position.y));
+    position = bounded;
+    if (correction < 0.000001) break;
   }
   body.x = clamp(position.x, radius, map.width - radius);
   body.y = clamp(position.y, radius, map.height - radius);
