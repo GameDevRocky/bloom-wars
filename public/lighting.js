@@ -43,7 +43,7 @@ export function lightVisibility(origin, radius, map) {
 // Ambient light, multiplied over the world. This is the only thing lighting an
 // unarmed player, who casts none of their own, so it sets how dark the game can
 // go before the opening of a match stops being playable.
-const AMBIENT = '#2b3342';
+const AMBIENT = '#4a5468';
 
 export class WorldLighting {
   constructor() {

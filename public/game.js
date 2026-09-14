@@ -19,7 +19,7 @@ const elements = Object.fromEntries([
 import { EMPTY_INPUT, stepPlayer } from './shared/simulation.js';
 import { drawCharacter as drawSpriteCharacter } from './character-renderer.js';
 import { ProjectilePlayback } from './projectile-playback.js';
-import { loadWorldArt, drawWorldFloor, drawWorldObstacle, drawWorldBorder } from './world-renderer.js';
+import { loadWorldArt, drawWorldFloor, drawWorldObstacle, drawWorldBorder, drawTeamTint } from './world-renderer.js';
 import { WorldLighting, clippedMuzzle } from './lighting.js';
 import { GameAudio } from './audio.js';
 import { Particles } from './particles.js';
@@ -501,6 +501,9 @@ function drawWorld() {
     rifle: state.config.rifle,
     shotAge: (id) => projectiles.shotAge(id, id === state.playerId ? performance.now() : state.renderTime),
   });
+  // After the lighting pass so the wash is not multiplied away, and before the
+  // projectiles so shots and impacts stay crisp on top of it.
+  drawTeamTint(context, state.map, state.camera, state.scale, innerWidth, innerHeight);
   for (const trail of state.frameTrails) drawBulletTrail(trail);
   for (const bullet of state.frameBullets) drawBullet(bullet);
   for (const impact of state.frameImpacts) drawImpact(impact);
